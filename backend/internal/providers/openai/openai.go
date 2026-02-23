@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -47,8 +48,19 @@ type openAIRequest struct {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string for text-only, []openAIContentPart for multimodal
+}
+
+type openAIContentPart struct {
+	Type     string          `json:"type"` // "text" or "image_url"
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"` // "auto", "low", "high"
 }
 
 type openAITool struct {
@@ -72,8 +84,35 @@ func (p *OpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	if systemPrompt != "" {
 		openAIMsgs = append(openAIMsgs, openAIMessage{Role: "system", Content: systemPrompt})
 	}
-	for _, m := range messages {
-		openAIMsgs = append(openAIMsgs, openAIMessage{Role: string(m.Role), Content: m.Content})
+	for i, m := range messages {
+		isLastUser := i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0
+
+		if isLastUser {
+			// Build multimodal content parts
+			var parts []openAIContentPart
+			for _, f := range files {
+				if !strings.HasPrefix(f.ContentType, "image/") {
+					log.Printf("[OPENAI] Skipping unsupported file type: %s (only images supported)", f.ContentType)
+					continue
+				}
+				parts = append(parts, openAIContentPart{
+					Type: "image_url",
+					ImageURL: &openAIImageURL{
+						URL:    fmt.Sprintf("data:%s;base64,%s", f.ContentType, f.Base64Data),
+						Detail: "auto",
+					},
+				})
+			}
+			if m.Content != "" {
+				parts = append(parts, openAIContentPart{
+					Type: "text",
+					Text: m.Content,
+				})
+			}
+			openAIMsgs = append(openAIMsgs, openAIMessage{Role: string(m.Role), Content: parts})
+		} else {
+			openAIMsgs = append(openAIMsgs, openAIMessage{Role: string(m.Role), Content: m.Content})
+		}
 	}
 
 	// Map tools

@@ -62,8 +62,14 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text         string          `json:"text,omitempty"`
-	FunctionCall *geminiFuncCall `json:"functionCall,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	FunctionCall *geminiFuncCall   `json:"functionCall,omitempty"`
+	InlineData   *geminiInlineData `json:"inlineData,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"` // base64 encoded
 }
 
 type geminiFuncCall struct {
@@ -84,7 +90,7 @@ func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	url := fmt.Sprintf("%s/%s:streamGenerateContent?key=%s", endpoint, model, apiKey)
 
 	var geminiMsgs []geminiContent
-	for _, m := range messages {
+	for i, m := range messages {
 		role := "user"
 		if m.Role == models.RoleAssistant {
 			role = "model"
@@ -92,9 +98,28 @@ func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 			// handled separately
 			continue
 		}
+
+		parts := []geminiPart{{Text: m.Content}}
+
+		// Attach files to the last user message
+		isLastUser := i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0
+		if isLastUser {
+			// Prepend file parts before text
+			var fileParts []geminiPart
+			for _, f := range files {
+				fileParts = append(fileParts, geminiPart{
+					InlineData: &geminiInlineData{
+						MimeType: f.ContentType,
+						Data:     f.Base64Data,
+					},
+				})
+			}
+			parts = append(fileParts, parts...)
+		}
+
 		geminiMsgs = append(geminiMsgs, geminiContent{
 			Role:  role,
-			Parts: []geminiPart{{Text: m.Content}},
+			Parts: parts,
 		})
 	}
 

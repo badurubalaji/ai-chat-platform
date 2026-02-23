@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -45,8 +46,20 @@ type claudeRequest struct {
 }
 
 type claudeMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string for text-only, []claudeContentBlock for multimodal
+}
+
+type claudeContentBlock struct {
+	Type   string             `json:"type"` // "text", "image", "document"
+	Text   string             `json:"text,omitempty"`
+	Source *claudeMediaSource `json:"source,omitempty"`
+}
+
+type claudeMediaSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // e.g. "image/png", "application/pdf"
+	Data      string `json:"data"`       // base64 encoded
 }
 
 type claudeTool struct {
@@ -87,7 +100,7 @@ func (p *ClaudeProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 		endpoint = defaultEndpoint
 	}
 
-	reqBody, err := p.prepareRequest(model, messages, tools, systemPrompt, true)
+	reqBody, err := p.prepareRequest(model, messages, tools, systemPrompt, true, files)
 	if err != nil {
 		return nil, err
 	}
@@ -214,14 +227,50 @@ func (p *ClaudeProvider) setHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("content-type", "application/json")
 }
 
-func (p *ClaudeProvider) prepareRequest(model string, messages []models.Message, tools []models.Tool, systemPrompt string, stream bool) ([]byte, error) {
+func (p *ClaudeProvider) prepareRequest(model string, messages []models.Message, tools []models.Tool, systemPrompt string, stream bool, files []models.FileAttachment) ([]byte, error) {
 	// Adapt models.Message to claudeMessage
 	var claudeMsgs []claudeMessage
-	for _, m := range messages {
-		claudeMsgs = append(claudeMsgs, claudeMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
-		})
+	for i, m := range messages {
+		// Check if this is the last user message and has file attachments
+		isLastUser := i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0
+
+		if isLastUser {
+			// Build multimodal content blocks
+			var blocks []claudeContentBlock
+			for _, f := range files {
+				blockType := "image" // default for images
+				if f.ContentType == "application/pdf" {
+					blockType = "document"
+				} else if !strings.HasPrefix(f.ContentType, "image/") {
+					log.Printf("[CLAUDE] Skipping unsupported file type: %s", f.ContentType)
+					continue
+				}
+				blocks = append(blocks, claudeContentBlock{
+					Type: blockType,
+					Source: &claudeMediaSource{
+						Type:      "base64",
+						MediaType: f.ContentType,
+						Data:      f.Base64Data,
+					},
+				})
+			}
+			// Add the text content
+			if m.Content != "" {
+				blocks = append(blocks, claudeContentBlock{
+					Type: "text",
+					Text: m.Content,
+				})
+			}
+			claudeMsgs = append(claudeMsgs, claudeMessage{
+				Role:    string(m.Role),
+				Content: blocks,
+			})
+		} else {
+			claudeMsgs = append(claudeMsgs, claudeMessage{
+				Role:    string(m.Role),
+				Content: m.Content,
+			})
+		}
 	}
 
 	req := claudeRequest{
