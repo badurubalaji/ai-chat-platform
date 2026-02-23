@@ -9,10 +9,10 @@ import (
 // ChatProvider defines the interface for interacting with different AI providers
 type ChatProvider interface {
 	// SendMessageStream sends a message to the AI provider and returns a stream of chunks
-	SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error)
+	SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error)
 
 	// SendMessageSync sends a message to the AI provider and returns the complete response
-	SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error)
+	SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error)
 
 	// ValidateCredentials checks if the provided credentials are valid
 	ValidateCredentials(ctx context.Context, apiKey string, model string, endpoint string) error

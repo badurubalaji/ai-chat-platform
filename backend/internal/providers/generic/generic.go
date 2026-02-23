@@ -54,7 +54,7 @@ type openAITool struct {
 	Function interface{} `json:"function"`
 }
 
-func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error) {
+func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("endpoint URL is required for generic OpenAI provider")
 	}
@@ -149,7 +149,7 @@ func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, m
 	return ch, nil
 }
 
-func (p *GenericOpenAIProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error) {
+func (p *GenericOpenAIProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 

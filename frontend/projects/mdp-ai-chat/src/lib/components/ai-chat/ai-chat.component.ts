@@ -5,11 +5,16 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatChipsModule } from '@angular/material/chips';
 import { AiMessageComponent } from '../ai-message/ai-message.component';
 import { AiEmptyStateComponent } from '../ai-empty-state/ai-empty-state.component';
 import { AiChatService } from '../../services/ai-chat.service';
 import { AiContextService } from '../../services/ai-context.service';
 import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai-chat.model';
+
+const ACCEPTED_TYPES = 'image/png,image/jpeg,image/webp,application/pdf,audio/mpeg,audio/wav,video/mp4';
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILES = 5;
 
 @Component({
   selector: 'mdp-ai-chat',
@@ -22,11 +27,15 @@ import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai
     MatIconModule,
     MatInputModule,
     MatProgressSpinnerModule,
+    MatChipsModule,
     AiMessageComponent,
     AiEmptyStateComponent
   ],
   template: `
-    <div class="chat-messages" #scrollContainer>
+    <div class="chat-messages" #scrollContainer
+         (dragover)="onDragOver($event)"
+         (dragleave)="onDragLeave($event)"
+         (drop)="onDrop($event)">
       @if (messages().length === 0 && !isLoading()) {
         <div class="welcome-text">
           <mat-icon class="welcome-icon">smart_toy</mat-icon>
@@ -49,18 +58,50 @@ import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai
           <span>.</span><span>.</span><span>.</span>
         </div>
       }
+
+      @if (isDragging()) {
+        <div class="drop-overlay">
+          <mat-icon>cloud_upload</mat-icon>
+          <span>Drop files here</span>
+        </div>
+      }
     </div>
 
+    @if (selectedFiles().length > 0) {
+      <div class="file-preview">
+        @for (file of selectedFiles(); track file.name) {
+          <div class="file-chip">
+            <mat-icon class="file-icon">{{ getFileIcon(file) }}</mat-icon>
+            <span class="file-name">{{ file.name }}</span>
+            <span class="file-size">{{ formatFileSize(file.size) }}</span>
+            <button mat-icon-button class="file-remove" (click)="removeFile(file)">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+      </div>
+    }
+
     <div class="chat-input">
+      <input type="file" #fileInput
+             [accept]="acceptedTypes"
+             multiple
+             (change)="onFilesSelected($event)"
+             style="display: none">
       <mat-form-field appearance="outline" class="full-width">
         <input matInput 
                [(ngModel)]="userInput" 
                (keyup.enter)="sendMessage()" 
                placeholder="Ask AI..." 
                [disabled]="isLoading()">
-        <button mat-icon-button matSuffix (click)="sendMessage()" [disabled]="!userInput.trim() || isLoading()">
-          <mat-icon>send</mat-icon>
-        </button>
+        <div matSuffix class="input-actions">
+          <button mat-icon-button (click)="fileInput.click()" [disabled]="isLoading()" matTooltip="Attach files">
+            <mat-icon>attach_file</mat-icon>
+          </button>
+          <button mat-icon-button (click)="sendMessage()" [disabled]="(!userInput.trim() && selectedFiles().length === 0) || isLoading()">
+            <mat-icon>send</mat-icon>
+          </button>
+        </div>
       </mat-form-field>
     </div>
   `,
@@ -78,6 +119,7 @@ import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai
       display: flex;
       flex-direction: column;
       gap: 12px;
+      position: relative;
     }
 
     .welcome-text {
@@ -109,6 +151,12 @@ import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai
       width: 100%;
     }
 
+    .input-actions {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+
     .typing-indicator {
       padding: 8px 16px;
       color: var(--ai-typing-dot, #757575);
@@ -127,6 +175,80 @@ import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai
       20% { opacity: 1; }
       100% { opacity: 0.2; }
     }
+
+    .file-preview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 16px 0;
+      border-top: 1px solid var(--ai-sidebar-border, #e0e0e0);
+      background: var(--ai-sidebar-bg, #fff);
+    }
+
+    .file-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 16px;
+      background: var(--mat-sys-surface-container, #f0edf6);
+      font-size: 0.75rem;
+      max-width: 200px;
+    }
+
+    .file-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      color: var(--mat-sys-primary, #6750a4);
+    }
+
+    .file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .file-size {
+      color: var(--mat-sys-on-surface-variant, #49454f);
+      white-space: nowrap;
+    }
+
+    .file-remove {
+      width: 20px!important;
+      height: 20px!important;
+      line-height: 20px!important;
+      
+      mat-icon {
+        font-size: 14px;
+        width: 14px;
+        height: 14px;
+      }
+    }
+
+    .drop-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: rgba(103, 80, 164, 0.1);
+      border: 2px dashed var(--mat-sys-primary, #6750a4);
+      border-radius: 12px;
+      color: var(--mat-sys-primary, #6750a4);
+      font-size: 1rem;
+      z-index: 10;
+      pointer-events: none;
+
+      mat-icon {
+        font-size: 48px;
+        width: 48px;
+        height: 48px;
+      }
+    }
   `]
 })
 export class AiChatComponent implements OnChanges {
@@ -138,7 +260,10 @@ export class AiChatComponent implements OnChanges {
   messages = signal<AiMessage[]>([]);
   isTyping = signal(false);
   isLoading = signal(false);
+  isDragging = signal(false);
+  selectedFiles = signal<File[]>([]);
   userInput = '';
+  readonly acceptedTypes = ACCEPTED_TYPES;
 
   private chatService = inject(AiChatService);
   private contextService = inject(AiContextService);
@@ -161,19 +286,90 @@ export class AiChatComponent implements OnChanges {
     });
   }
 
+  // -- File handling --
+
+  onFilesSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files) {
+      this.addFiles(Array.from(input.files));
+      input.value = ''; // Reset so same file can be re-selected
+    }
+  }
+
+  onDragOver(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(true);
+  }
+
+  onDragLeave(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(false);
+  }
+
+  onDrop(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(false);
+    if (event.dataTransfer?.files) {
+      this.addFiles(Array.from(event.dataTransfer.files));
+    }
+  }
+
+  private addFiles(files: File[]): void {
+    const current = this.selectedFiles();
+    const remaining = MAX_FILES - current.length;
+    const valid = files
+      .filter(f => f.size <= MAX_FILE_SIZE)
+      .filter(f => ACCEPTED_TYPES.split(',').some(t => f.type === t || f.name.endsWith(t.replace('*', ''))))
+      .slice(0, remaining);
+    this.selectedFiles.set([...current, ...valid]);
+  }
+
+  removeFile(file: File): void {
+    this.selectedFiles.update(files => files.filter(f => f !== file));
+  }
+
+  getFileIcon(file: File): string {
+    if (file.type.startsWith('image/')) return 'image';
+    if (file.type === 'application/pdf') return 'picture_as_pdf';
+    if (file.type.startsWith('audio/')) return 'audiotrack';
+    if (file.type.startsWith('video/')) return 'videocam';
+    return 'insert_drive_file';
+  }
+
+  formatFileSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // -- Messaging --
+
   sendMessage(): void {
-    if (!this.userInput.trim() || this.isLoading()) return;
+    const files = this.selectedFiles();
+    if ((!this.userInput.trim() && files.length === 0) || this.isLoading()) return;
 
     const content = this.userInput;
     this.userInput = '';
+    this.selectedFiles.set([]);
     this.isLoading.set(true);
     this.isTyping.set(true);
 
-    // Optimistic UI update
+    // Optimistic UI update with attachment indicators
+    const attachments = files.map(f => ({
+      filename: f.name,
+      content_type: f.type,
+      base64: '', // Don't store base64 in UI memory
+      size: f.size
+    }));
+
     const userMsg: AiMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content,
+      attachments: attachments.length > 0 ? attachments : undefined,
       created_at: new Date().toISOString()
     };
     this.messages.update(msgs => [...msgs, userMsg]);
@@ -182,7 +378,7 @@ export class AiChatComponent implements OnChanges {
     // Include page context if available
     const context = this.contextService.getContext();
 
-    this.chatService.sendMessage(this.conversationId, content, context).subscribe({
+    this.chatService.sendMessage(this.conversationId, content, context, files.length > 0 ? files : undefined).subscribe({
       next: (chunk) => {
         this.isTyping.set(false);
         if (chunk.tool_confirm) {

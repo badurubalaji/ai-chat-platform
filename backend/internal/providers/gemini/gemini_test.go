@@ -34,7 +34,7 @@ func TestToolUseStreaming(t *testing.T) {
 	// So we need to handle that in the mock server if we want strict path checking,
 	// but for now we just return the body for any request.
 
-	ch, err := provider.SendMessageStream(ctx, "fake-key", "gemini-pro", server.URL, nil, nil, "")
+	ch, err := provider.SendMessageStream(ctx, "fake-key", "gemini-pro", server.URL, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("SendMessageStream failed: %v", err)
 	}

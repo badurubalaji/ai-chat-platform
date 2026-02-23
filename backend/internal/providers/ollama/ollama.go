@@ -44,7 +44,7 @@ type ollamaMessage struct {
 	Content string `json:"content"`
 }
 
-func (p *OllamaProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error) {
+func (p *OllamaProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
 	if endpoint == "" {
 		endpoint = "http://localhost:11434"
 	}
@@ -115,7 +115,7 @@ func (p *OllamaProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	return ch, nil
 }
 
-func (p *OllamaProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error) {
+func (p *OllamaProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 

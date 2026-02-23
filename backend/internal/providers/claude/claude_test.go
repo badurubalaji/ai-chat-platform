@@ -77,7 +77,7 @@ data: {"type": "message_stop"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	ch, err := provider.SendMessageStream(ctx, "fake-key", "claude-3", server.URL, nil, nil, "")
+	ch, err := provider.SendMessageStream(ctx, "fake-key", "claude-3", server.URL, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("SendMessageStream failed: %v", err)
 	}

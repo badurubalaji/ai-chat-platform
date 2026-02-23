@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -115,6 +117,98 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// chatRequest holds the parsed chat request from either JSON or multipart.
+type chatRequest struct {
+	ConversationID *uuid.UUID
+	Message        string
+	Context        map[string]interface{}
+	Files          []models.FileAttachment
+}
+
+// parseMultipartChat parses a multipart/form-data chat request with file uploads.
+func (h *Handler) parseMultipartChat(r *http.Request) (*chatRequest, error) {
+	const maxMemory = 50 << 20 // 50MB total
+	if err := r.ParseMultipartForm(maxMemory); err != nil {
+		return nil, fmt.Errorf("failed to parse multipart form: %w", err)
+	}
+
+	req := &chatRequest{
+		Message: r.FormValue("message"),
+	}
+
+	if convID := r.FormValue("conversation_id"); convID != "" {
+		parsed, err := uuid.Parse(convID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid conversation_id: %w", err)
+		}
+		req.ConversationID = &parsed
+	}
+
+	if ctxStr := r.FormValue("context"); ctxStr != "" {
+		if err := json.Unmarshal([]byte(ctxStr), &req.Context); err != nil {
+			log.Printf("[CHAT] Warning: failed to parse context JSON: %v", err)
+		}
+	}
+
+	// Parse uploaded files
+	if r.MultipartForm != nil && r.MultipartForm.File != nil {
+		fileHeaders := r.MultipartForm.File["files"]
+		if len(fileHeaders) > 5 {
+			return nil, fmt.Errorf("too many files: maximum 5 files allowed")
+		}
+		for _, fh := range fileHeaders {
+			if fh.Size > 20<<20 { // 20MB per file
+				return nil, fmt.Errorf("file %q exceeds 20MB limit", fh.Filename)
+			}
+			f, err := fh.Open()
+			if err != nil {
+				return nil, fmt.Errorf("failed to open file %q: %w", fh.Filename, err)
+			}
+			data, err := io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				return nil, fmt.Errorf("failed to read file %q: %w", fh.Filename, err)
+			}
+			req.Files = append(req.Files, models.FileAttachment{
+				Filename:    fh.Filename,
+				ContentType: fh.Header.Get("Content-Type"),
+				Base64Data:  base64.StdEncoding.EncodeToString(data),
+				Size:        fh.Size,
+			})
+		}
+	}
+
+	return req, nil
+}
+
+// parseJSONChat parses a JSON chat request (supports inline base64 file attachments).
+func (h *Handler) parseJSONChat(r *http.Request) (*chatRequest, error) {
+	var body struct {
+		ConversationID *uuid.UUID              `json:"conversation_id"`
+		Message        string                  `json:"message"`
+		Context        map[string]interface{}  `json:"context"`
+		Files          []models.FileAttachment `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	// Validate files
+	if len(body.Files) > 5 {
+		return nil, fmt.Errorf("too many files: maximum 5 files allowed")
+	}
+	for _, f := range body.Files {
+		if f.Size > 20<<20 {
+			return nil, fmt.Errorf("file %q exceeds 20MB limit", f.Filename)
+		}
+	}
+	return &chatRequest{
+		ConversationID: body.ConversationID,
+		Message:        body.Message,
+		Context:        body.Context,
+		Files:          body.Files,
+	}, nil
+}
+
 func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -124,17 +218,21 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	tenantID := "default-tenant"
 	userID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
-	var req struct {
-		ConversationID *uuid.UUID             `json:"conversation_id"`
-		Message        string                 `json:"message"`
-		Context        map[string]interface{} `json:"context"`
+	// Parse request: multipart (with files) or JSON (text-only or base64 files)
+	var req *chatRequest
+	var parseErr error
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		req, parseErr = h.parseMultipartChat(r)
+	} else {
+		req, parseErr = h.parseJSONChat(r)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[CHAT] Failed to decode request: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if parseErr != nil {
+		log.Printf("[CHAT] Failed to decode request: %v", parseErr)
+		http.Error(w, parseErr.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Printf("[CHAT] Received message: %q (conversation_id: %v)", req.Message, req.ConversationID)
+	log.Printf("[CHAT] Received message: %q (conversation_id: %v, files: %d)", req.Message, req.ConversationID, len(req.Files))
 
 	// Resolve provider: BYOK config > adapter default > error
 	provider, apiKey, modelName, endpoint, providerName, err := h.resolveProvider(r.Context(), tenantID)
@@ -179,6 +277,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		ConversationID: convoID,
 		Role:           models.RoleUser,
 		Content:        req.Message,
+		Files:          req.Files,
 		CreatedAt:      time.Now(),
 	}
 	if err := h.store.CreateMessage(r.Context(), userMsg); err != nil {
@@ -218,7 +317,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// First pass: send to model
 	log.Printf("[CHAT] Sending %d messages to %s (model: %s)", len(providerMessages), providerName, modelName)
-	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, providerMessages, tools, systemPrompt)
+	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, providerMessages, tools, systemPrompt, req.Files)
 	if err != nil {
 		log.Printf("[CHAT] Stream error: %v", err)
 		h.sendSSE(w, "error", err.Error())
@@ -339,7 +438,7 @@ func (h *Handler) consumeStream(w http.ResponseWriter, stream <-chan models.Stre
 
 		// Stream chunks to client (for both modes — frontend handles replacement)
 		data, _ := json.Marshal(struct {
-			Content  string          `json:"content"`
+			Content  string           `json:"content"`
 			ToolCall *models.ToolCall `json:"tool_call,omitempty"`
 		}{
 			Content:  chunk.Content,
@@ -463,7 +562,7 @@ func (h *Handler) handleToolExecution(
 		Content: fmt.Sprintf("Tool '%s' result: %s", toolCall.Name, toolResultContent),
 	})
 
-	secondStream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, secondPassMessages, tools, systemPrompt)
+	secondStream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, secondPassMessages, tools, systemPrompt, nil)
 	if err != nil {
 		log.Printf("[CHAT] Second pass error: %v", err)
 		return
@@ -502,7 +601,7 @@ func (h *Handler) sendToolCancelled(
 		Content: fmt.Sprintf("The user cancelled the '%s' action. Acknowledge this gracefully.", toolName),
 	})
 
-	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, cancelMessages, tools, systemPrompt)
+	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, cancelMessages, tools, systemPrompt, nil)
 	if err != nil {
 		return
 	}

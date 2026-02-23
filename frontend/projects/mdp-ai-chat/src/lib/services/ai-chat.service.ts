@@ -18,13 +18,13 @@ export class AiChatService {
         this.apiUrl = `${config.apiBaseUrl}/api/v1/ai`;
     }
 
-    sendMessage(conversationId: string | null, message: string, context?: Record<string, unknown> | null): Observable<AiStreamChunk> {
+    sendMessage(conversationId: string | null, message: string, context?: Record<string, unknown> | null, files?: File[]): Observable<AiStreamChunk> {
         return new Observable((observer: Observer<AiStreamChunk>) => {
             const url = `${this.apiUrl}/chat`;
 
             this.config.authTokenFn().subscribe({
                 next: (token) => {
-                    this.fetchStream(url, token, conversationId, message, context ?? undefined, observer);
+                    this.fetchStream(url, token, conversationId, message, context ?? undefined, observer, files);
                 },
                 error: (err) => observer.error(err)
             });
@@ -37,20 +37,44 @@ export class AiChatService {
         conversationId: string | null,
         message: string,
         context: Record<string, unknown> | undefined,
-        observer: Observer<AiStreamChunk>
+        observer: Observer<AiStreamChunk>,
+        files?: File[]
     ) {
         try {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
+            let body: BodyInit;
+            const headers: Record<string, string> = {
+                'Authorization': `Bearer ${token}`
+            };
+
+            if (files && files.length > 0) {
+                // Multipart form-data for file uploads
+                const formData = new FormData();
+                formData.append('message', message);
+                if (conversationId) {
+                    formData.append('conversation_id', conversationId);
+                }
+                if (context) {
+                    formData.append('context', JSON.stringify(context));
+                }
+                for (const file of files) {
+                    formData.append('files', file, file.name);
+                }
+                body = formData;
+                // Don't set Content-Type — browser sets multipart boundary automatically
+            } else {
+                // JSON for text-only messages
+                headers['Content-Type'] = 'application/json';
+                body = JSON.stringify({
                     conversation_id: conversationId,
                     message,
                     context
-                })
+                });
+            }
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers,
+                body
             });
 
             if (!response.ok) {

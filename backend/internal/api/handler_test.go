@@ -79,12 +79,17 @@ func (m *MockStore) DeleteConversation(ctx context.Context, id uuid.UUID) error 
 	return args.Error(0)
 }
 
+func (m *MockStore) LogToolExecution(ctx context.Context, exec *models.ToolExecution) error {
+	args := m.Called(ctx, exec)
+	return args.Error(0)
+}
+
 func TestHandleConfig_Get(t *testing.T) {
 	mockStore := new(MockStore)
 	cfg := &config.Config{
 		AIEncryptionKey: "00000000000000000000000000000000",
 	}
-	handler := NewHandler(mockStore, cfg)
+	handler := NewHandler(mockStore, cfg, nil)
 
 	mockStore.On("GetProviderConfig", mock.Anything, "default-tenant").Return(&models.ProviderConfig{
 		Provider:        "openai",
@@ -112,7 +117,7 @@ func TestHandleConfig_Post(t *testing.T) {
 	cfg := &config.Config{
 		AIEncryptionKey: "00000000000000000000000000000000",
 	}
-	handler := NewHandler(mockStore, cfg)
+	handler := NewHandler(mockStore, cfg, nil)
 
 	payload := map[string]interface{}{
 		"provider": "claude",
@@ -138,7 +143,7 @@ func TestHandleConfig_Post(t *testing.T) {
 func TestHandleConversations_List(t *testing.T) {
 	mockStore := new(MockStore)
 	cfg := &config.Config{}
-	handler := NewHandler(mockStore, cfg)
+	handler := NewHandler(mockStore, cfg, nil)
 
 	expectedConvos := []*models.Conversation{
 		{ID: uuid.New(), Title: "Test Chat 1", CreatedAt: time.Now()},

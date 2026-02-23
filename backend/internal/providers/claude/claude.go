@@ -82,7 +82,7 @@ func (p *ClaudeProvider) SupportsStreaming() bool {
 	return true
 }
 
-func (p *ClaudeProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error) {
+func (p *ClaudeProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
 	if endpoint == "" {
 		endpoint = defaultEndpoint
 	}
@@ -174,7 +174,7 @@ func (p *ClaudeProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	return ch, nil
 }
 
-func (p *ClaudeProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error) {
+func (p *ClaudeProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	// Implementation for sync (omitted for brevity, similar to stream but unmarshal full response)
 	return nil, fmt.Errorf("not implemented")
 }

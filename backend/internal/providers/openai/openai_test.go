@@ -29,7 +29,7 @@ data: [DONE]
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	ch, err := provider.SendMessageStream(ctx, "fake-key", "gpt-4", server.URL, nil, nil, "")
+	ch, err := provider.SendMessageStream(ctx, "fake-key", "gpt-4", server.URL, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("SendMessageStream failed: %v", err)
 	}

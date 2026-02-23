@@ -1,5 +1,12 @@
 export type AiProvider = 'claude' | 'openai' | 'gemini' | 'ollama' | 'generic' | 'neuralgate';
 
+export interface AiFileAttachment {
+    filename: string;
+    content_type: string;
+    base64: string;
+    size: number;
+}
+
 export interface AiProviderConfig {
     id: string;
     tenant_id?: string;
@@ -31,6 +38,7 @@ export interface AiMessage {
     id: string;
     role: AiMessageRole;
     content: string;
+    attachments?: AiFileAttachment[];
     metadata?: AiMessageMetadata;
     created_at: string;
 }

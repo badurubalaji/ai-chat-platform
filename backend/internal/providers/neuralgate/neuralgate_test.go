@@ -233,6 +233,7 @@ data: {"model":"test-model","message":{"role":"assistant","content":""},"done":t
 		[]models.Message{{Role: models.RoleUser, Content: "Hi"}},
 		nil,
 		"",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -328,6 +329,7 @@ func TestRateLimiting(t *testing.T) {
 		[]models.Message{{Role: models.RoleUser, Content: "Hi"}},
 		nil,
 		"",
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected rate limit error, got nil")
@@ -350,6 +352,7 @@ func TestEmptyEndpoint(t *testing.T) {
 		[]models.Message{{Role: models.RoleUser, Content: "Hi"}},
 		nil,
 		"",
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected error for empty endpoint, got nil")
@@ -398,6 +401,7 @@ data: {"model":"test","message":{"role":"assistant","content":""},"done":true,"p
 		[]models.Message{{Role: models.RoleUser, Content: "Hi"}},
 		nil,
 		"",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -452,6 +456,7 @@ func TestStreamInterruption(t *testing.T) {
 		[]models.Message{{Role: models.RoleUser, Content: "Hi"}},
 		nil,
 		"",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -17,12 +17,21 @@ const (
 	RoleToolResult MessageRole = "tool_result"
 )
 
+// FileAttachment represents a file attached to a chat message
+type FileAttachment struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Base64Data  string `json:"base64"`
+	Size        int64  `json:"size"`
+}
+
 // Message represents a single chat message
 type Message struct {
 	ID             uuid.UUID              `json:"id"`
 	ConversationID uuid.UUID              `json:"conversation_id"`
 	Role           MessageRole            `json:"role"`
 	Content        string                 `json:"content"`
+	Files          []FileAttachment       `json:"files,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 	CreatedAt      time.Time              `json:"created_at"`
 }

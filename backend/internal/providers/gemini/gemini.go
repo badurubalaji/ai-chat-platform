@@ -76,7 +76,7 @@ type geminiConfig struct {
 	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
 }
 
-func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error) {
+func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
 	if endpoint == "" {
 		endpoint = defaultEndpoint
 	}
@@ -250,7 +250,7 @@ func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	return ch, nil
 }
 
-func (p *GeminiProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error) {
+func (p *GeminiProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 

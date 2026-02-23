@@ -102,13 +102,17 @@ func (s *InMemoryStore) DeleteConversation(ctx context.Context, id uuid.UUID) er
 	return nil
 }
 
+func (s *InMemoryStore) LogToolExecution(ctx context.Context, exec *models.ToolExecution) error {
+	return nil
+}
+
 func TestIntegration_ConfigFlow(t *testing.T) {
 	// Setup
 	memStore := NewInMemoryStore()
 	cfg := &config.Config{
 		AIEncryptionKey: "00000000000000000000000000000000",
 	}
-	handler := NewHandler(memStore, cfg)
+	handler := NewHandler(memStore, cfg, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -161,7 +165,7 @@ func TestIntegration_ConversationFlow(t *testing.T) {
 	memStore := NewInMemoryStore()
 	handler := NewHandler(memStore, &config.Config{
 		AIEncryptionKey: "00000000000000000000000000000000",
-	})
+	}, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

@@ -47,8 +47,14 @@ func (p *NeuralGateProvider) SupportsStreaming() bool {
 // Request/response types for NeuralGate API
 
 type neuralGateMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string                     `json:"role"`
+	Content string                     `json:"content"`
+	Files   []neuralGateFileAttachment `json:"files,omitempty"`
+}
+
+type neuralGateFileAttachment struct {
+	Base64      string `json:"base64"`
+	ContentType string `json:"content_type"`
 }
 
 type neuralGateOptions struct {
@@ -154,7 +160,7 @@ func (p *NeuralGateProvider) parseError(resp *http.Response, context string) err
 	return fmt.Errorf("NeuralGate %s error (status %d)", context, resp.StatusCode)
 }
 
-func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (<-chan models.StreamChunk, error) {
+func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("endpoint URL is required for NeuralGate provider")
 	}
@@ -172,8 +178,18 @@ func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, mode
 	if systemPrompt != "" {
 		ngMsgs = append(ngMsgs, neuralGateMessage{Role: "system", Content: systemPrompt})
 	}
-	for _, m := range messages {
-		ngMsgs = append(ngMsgs, neuralGateMessage{Role: string(m.Role), Content: m.Content})
+	for i, m := range messages {
+		ngMsg := neuralGateMessage{Role: string(m.Role), Content: m.Content}
+		// Attach files to the last user message
+		if i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0 {
+			for _, f := range files {
+				ngMsg.Files = append(ngMsg.Files, neuralGateFileAttachment{
+					Base64:      f.Base64Data,
+					ContentType: f.ContentType,
+				})
+			}
+		}
+		ngMsgs = append(ngMsgs, ngMsg)
 	}
 
 	reqBody, err := json.Marshal(neuralGateRequest{
@@ -273,7 +289,7 @@ func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, mode
 	return ch, nil
 }
 
-func (p *NeuralGateProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string) (*models.Message, error) {
+func (p *NeuralGateProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
