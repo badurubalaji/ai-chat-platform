@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -85,8 +87,16 @@ func parseCredentials(apiKey string) (clientID, clientSecret string, err error) 
 	return parts[0], parts[1], nil
 }
 
+// oauthTokenFields holds the token fields we need from the OAuth response.
+type oauthTokenFields struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
 // getAccessToken obtains a Bearer token via OAuth2 client_credentials grant.
 // Tokens are cached and reused until 30 seconds before expiry.
+// Handles both flat responses {"access_token": "..."} and
+// data-wrapped responses {"data": {"access_token": "..."}}.
 func (p *NeuralGateProvider) getAccessToken(ctx context.Context, apiKey, endpoint string) (string, error) {
 	// Check cache first
 	if cached, ok := p.tokenCache.Load(apiKey); ok {
@@ -125,16 +135,33 @@ func (p *NeuralGateProvider) getAccessToken(ctx context.Context, apiKey, endpoin
 		return "", p.parseError(resp, "OAuth token exchange")
 	}
 
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
+	// Read the full response body for flexible parsing
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read NeuralGate OAuth response: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	log.Printf("[NEURALGATE] OAuth response body: %s", string(body))
+
+	// Try flat format first: {"access_token": "...", "expires_in": 900}
+	var tokenResp oauthTokenFields
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return "", fmt.Errorf("failed to parse NeuralGate OAuth response: %w", err)
 	}
 
+	// If flat format didn't yield an access_token, try data-wrapped format:
+	// {"data": {"access_token": "...", "expires_in": 900}}
 	if tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("NeuralGate OAuth returned empty access token")
+		var wrappedResp struct {
+			Data oauthTokenFields `json:"data"`
+		}
+		if err := json.Unmarshal(body, &wrappedResp); err == nil && wrappedResp.Data.AccessToken != "" {
+			tokenResp = wrappedResp.Data
+			log.Printf("[NEURALGATE] OAuth token found in data-wrapped response")
+		}
+	}
+
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("NeuralGate OAuth returned empty access token (response: %s)", string(body))
 	}
 
 	// Cache the token

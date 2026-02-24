@@ -107,6 +107,56 @@ func TestOAuthTokenExchange(t *testing.T) {
 	}
 }
 
+// mockOAuthServerWrapped returns tokens in NeuralGate's data-wrapped format:
+// {"success": true, "data": {"access_token": "...", "token_type": "Bearer", "expires_in": 900}}
+func mockOAuthServerWrapped(t *testing.T) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+
+			if body["client_id"] == "valid_id" && body["client_secret"] == "valid_secret" {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true,
+					"data": map[string]interface{}{
+						"access_token": "wrapped_token_xyz789",
+						"token_type":   "Bearer",
+						"expires_in":   900,
+					},
+				})
+				return
+			}
+
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error": map[string]interface{}{
+					"code":    "UNAUTHORIZED",
+					"message": "invalid client credentials",
+				},
+			})
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+}
+
+func TestOAuthTokenExchange_DataWrapped(t *testing.T) {
+	server := mockOAuthServerWrapped(t)
+	defer server.Close()
+
+	p := NewNeuralGateProvider()
+	token, err := p.getAccessToken(context.Background(), "valid_id:valid_secret", server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "wrapped_token_xyz789" {
+		t.Errorf("expected token 'wrapped_token_xyz789', got %q", token)
+	}
+}
+
 func TestOAuthTokenCaching(t *testing.T) {
 	var requestCount int32
 	server := mockOAuthServer(t, &requestCount)
