@@ -62,9 +62,15 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text         string            `json:"text,omitempty"`
-	FunctionCall *geminiFuncCall   `json:"functionCall,omitempty"`
-	InlineData   *geminiInlineData `json:"inlineData,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	FunctionCall     *geminiFuncCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFuncResponse `json:"functionResponse,omitempty"`
+	InlineData       *geminiInlineData   `json:"inlineData,omitempty"`
+}
+
+type geminiFuncResponse struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
 }
 
 type geminiInlineData struct {
@@ -91,6 +97,40 @@ func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 
 	var geminiMsgs []geminiContent
 	for i, m := range messages {
+		// Handle Gemini-native function call/response messages (from FormatToolResult)
+		if m.Metadata != nil {
+			if fc, ok := m.Metadata["_gemini_function_call"]; ok {
+				fcMap := fc.(map[string]interface{})
+				argsJSON, _ := json.Marshal(fcMap["args"])
+				parts := []geminiPart{}
+				if m.Content != "" {
+					parts = append(parts, geminiPart{Text: m.Content})
+				}
+				parts = append(parts, geminiPart{
+					FunctionCall: &geminiFuncCall{
+						Name: fcMap["name"].(string),
+						Args: json.RawMessage(argsJSON),
+					},
+				})
+				geminiMsgs = append(geminiMsgs, geminiContent{Role: "model", Parts: parts})
+				continue
+			}
+			if fr, ok := m.Metadata["_gemini_function_response"]; ok {
+				frMap := fr.(map[string]interface{})
+				responseJSON, _ := json.Marshal(frMap["response"])
+				geminiMsgs = append(geminiMsgs, geminiContent{
+					Role: "function",
+					Parts: []geminiPart{{
+						FunctionResponse: &geminiFuncResponse{
+							Name:     frMap["name"].(string),
+							Response: json.RawMessage(responseJSON),
+						},
+					}},
+				})
+				continue
+			}
+		}
+
 		role := "user"
 		if m.Role == models.RoleAssistant {
 			role = "model"
@@ -273,6 +313,47 @@ func (p *GeminiProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	}()
 
 	return ch, nil
+}
+
+func (p *GeminiProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	// Gemini expects:
+	// 1. Model message with functionCall part
+	// 2. Function message with functionResponse part
+	var args map[string]interface{}
+	json.Unmarshal([]byte(toolCall.Arguments), &args)
+
+	assistantMsg := models.Message{
+		Role:    models.RoleAssistant,
+		Content: assistantText,
+		Metadata: map[string]interface{}{
+			"_gemini_function_call": map[string]interface{}{
+				"name": toolCall.Name,
+				"args": args,
+			},
+		},
+	}
+
+	// Parse result as JSON object, fallback to wrapping in {"result": ...}
+	var resultObj map[string]interface{}
+	if err := json.Unmarshal([]byte(result), &resultObj); err != nil {
+		resultObj = map[string]interface{}{"result": result}
+	}
+	if isError {
+		resultObj = map[string]interface{}{"error": result}
+	}
+
+	toolResultMsg := models.Message{
+		Role:    models.RoleToolResult,
+		Content: result,
+		Metadata: map[string]interface{}{
+			"_gemini_function_response": map[string]interface{}{
+				"name":     toolCall.Name,
+				"response": resultObj,
+			},
+		},
+	}
+
+	return assistantMsg, toolResultMsg
 }
 
 func (p *GeminiProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {

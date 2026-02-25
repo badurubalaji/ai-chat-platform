@@ -115,6 +115,17 @@ func (p *OllamaProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	return ch, nil
 }
 
+func (p *OllamaProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	// Two-pass providers use plain text format
+	assistantMsg := models.Message{Role: models.RoleAssistant, Content: assistantText}
+	content := fmt.Sprintf("Tool '%s' result: %s", toolCall.Name, result)
+	if isError {
+		content = fmt.Sprintf("Tool '%s' failed: %s", toolCall.Name, result)
+	}
+	toolResultMsg := models.Message{Role: models.RoleToolResult, Content: content}
+	return assistantMsg, toolResultMsg
+}
+
 func (p *OllamaProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }

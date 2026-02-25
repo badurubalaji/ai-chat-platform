@@ -227,10 +227,73 @@ func (p *ClaudeProvider) setHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("content-type", "application/json")
 }
 
+func (p *ClaudeProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	// Claude expects:
+	// 1. Assistant message with tool_use content block
+	// 2. User message with tool_result content block
+	toolUseBlock := map[string]interface{}{
+		"type":  "tool_use",
+		"id":    toolCall.ID,
+		"name":  toolCall.Name,
+		"input": json.RawMessage(toolCall.Arguments),
+	}
+
+	assistantContent := []interface{}{}
+	if assistantText != "" {
+		assistantContent = append(assistantContent, map[string]interface{}{
+			"type": "text",
+			"text": assistantText,
+		})
+	}
+	assistantContent = append(assistantContent, toolUseBlock)
+
+	assistantJSON, _ := json.Marshal(assistantContent)
+	assistantMsg := models.Message{
+		Role:    models.RoleAssistant,
+		Content: string(assistantJSON),
+		Metadata: map[string]interface{}{
+			"_raw_content": true, // signal to prepareRequest to use raw JSON
+		},
+	}
+
+	toolResultBlock := map[string]interface{}{
+		"type":       "tool_result",
+		"tool_use_id": toolCall.ID,
+		"content":    result,
+	}
+	if isError {
+		toolResultBlock["is_error"] = true
+	}
+
+	resultContent := []interface{}{toolResultBlock}
+	resultJSON, _ := json.Marshal(resultContent)
+	toolResultMsg := models.Message{
+		Role:    models.RoleUser,
+		Content: string(resultJSON),
+		Metadata: map[string]interface{}{
+			"_raw_content": true,
+		},
+	}
+
+	return assistantMsg, toolResultMsg
+}
+
 func (p *ClaudeProvider) prepareRequest(model string, messages []models.Message, tools []models.Tool, systemPrompt string, stream bool, files []models.FileAttachment) ([]byte, error) {
 	// Adapt models.Message to claudeMessage
 	var claudeMsgs []claudeMessage
 	for i, m := range messages {
+		// Handle raw content blocks (from FormatToolResult)
+		if m.Metadata != nil {
+			if _, ok := m.Metadata["_raw_content"]; ok {
+				var rawContent interface{}
+				if err := json.Unmarshal([]byte(m.Content), &rawContent); err == nil {
+					role := string(m.Role)
+					claudeMsgs = append(claudeMsgs, claudeMessage{Role: role, Content: rawContent})
+					continue
+				}
+			}
+		}
+
 		// Check if this is the last user message and has file attachments
 		isLastUser := i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0
 

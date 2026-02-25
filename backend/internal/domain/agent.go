@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,7 +99,7 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 
 		systemPrompt := params.SystemPrompt
 		if useTwoPass && a.orchestrator != nil {
-			systemPrompt = a.orchestrator.BuildSystemPrompt()
+			systemPrompt = a.orchestrator.BuildSystemPromptWithTools(toolConfigs)
 		}
 
 		var nativeTools []models.Tool
@@ -151,11 +152,8 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 			toolConfig := a.lookupToolConfig(toolName, toolConfigs)
 			if toolConfig == nil {
 				log.Printf("[AGENT] Unknown tool: %s", toolName)
-				// Tell the model the tool doesn't exist
-				messages = append(messages,
-					models.Message{Role: models.RoleAssistant, Content: iterResponse},
-					models.Message{Role: models.RoleToolResult, Content: fmt.Sprintf("Error: tool '%s' not found", toolName)},
-				)
+				aMsg, tMsg := a.provider.FormatToolResult(iterResponse, detectedToolCall, fmt.Sprintf("tool '%s' not found", toolName), true)
+				messages = append(messages, aMsg, tMsg)
 				continue
 			}
 
@@ -190,22 +188,16 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 					Type: "tool_result",
 					Data: fmt.Sprintf(`{"tool":"%s","status":"error","error":"%s"}`, toolName, execErr.Error()),
 				}
-				// Give model the error so it can respond
-				messages = append(messages,
-					models.Message{Role: models.RoleAssistant, Content: iterResponse},
-					models.Message{Role: models.RoleToolResult, Content: fmt.Sprintf("Tool '%s' failed: %s", toolName, execErr.Error())},
-				)
+				aMsg, tMsg := a.provider.FormatToolResult(iterResponse, detectedToolCall, execErr.Error(), true)
+				messages = append(messages, aMsg, tMsg)
 			} else {
 				log.Printf("[AGENT] Tool %s executed in %dms", toolName, durationMs)
 				events <- AgentEvent{
 					Type: "tool_result",
 					Data: fmt.Sprintf(`{"tool":"%s","status":"complete"}`, toolName),
 				}
-				// Give model the result
-				messages = append(messages,
-					models.Message{Role: models.RoleAssistant, Content: iterResponse},
-					models.Message{Role: models.RoleToolResult, Content: fmt.Sprintf("Tool '%s' result: %s", toolName, string(result))},
-				)
+				aMsg, tMsg := a.provider.FormatToolResult(iterResponse, detectedToolCall, string(result), false)
+				messages = append(messages, aMsg, tMsg)
 			}
 
 			// Loop continues — model will process tool result
@@ -237,10 +229,12 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 }
 
 // consumeStream reads the provider stream, emitting chunk events and returning the full response.
+// It accumulates streaming tool call fragments (ID, Name, Arguments) into a single ToolCall.
 func (a *Agent) consumeStream(ctx context.Context, events chan<- AgentEvent, stream <-chan models.StreamChunk, isTwoPass bool) (string, int, int, *models.ToolCall) {
 	fullResponse := ""
 	var inputTokens, outputTokens int
 	var detectedToolCall *models.ToolCall
+	var toolCallArgs strings.Builder
 
 	for chunk := range stream {
 		if chunk.Error != nil {
@@ -259,7 +253,21 @@ func (a *Agent) consumeStream(ctx context.Context, events chan<- AgentEvent, str
 		fullResponse += chunk.Content
 
 		if chunk.ToolCall != nil {
-			detectedToolCall = chunk.ToolCall
+			if detectedToolCall == nil {
+				detectedToolCall = &models.ToolCall{
+					ID:   chunk.ToolCall.ID,
+					Name: chunk.ToolCall.Name,
+				}
+			}
+			if chunk.ToolCall.ID != "" {
+				detectedToolCall.ID = chunk.ToolCall.ID
+			}
+			if chunk.ToolCall.Name != "" {
+				detectedToolCall.Name = chunk.ToolCall.Name
+			}
+			if chunk.ToolCall.Arguments != "" {
+				toolCallArgs.WriteString(chunk.ToolCall.Arguments)
+			}
 		}
 
 		// Stream to client
@@ -271,6 +279,11 @@ func (a *Agent) consumeStream(ctx context.Context, events chan<- AgentEvent, str
 			ToolCall: chunk.ToolCall,
 		})
 		events <- AgentEvent{Type: "chunk", Data: string(data)}
+	}
+
+	// Finalize accumulated arguments
+	if detectedToolCall != nil && toolCallArgs.Len() > 0 {
+		detectedToolCall.Arguments = toolCallArgs.String()
 	}
 
 	return fullResponse, inputTokens, outputTokens, detectedToolCall

@@ -48,8 +48,10 @@ type openAIRequest struct {
 }
 
 type openAIMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string for text-only, []openAIContentPart for multimodal
+	Role       string           `json:"role"`
+	Content    interface{}      `json:"content"`                // string for text-only, []openAIContentPart for multimodal
+	ToolCalls  *json.RawMessage `json:"tool_calls,omitempty"`   // for assistant messages with tool calls
+	ToolCallID string           `json:"tool_call_id,omitempty"` // for tool result messages
 }
 
 type openAIContentPart struct {
@@ -85,6 +87,30 @@ func (p *OpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 		openAIMsgs = append(openAIMsgs, openAIMessage{Role: "system", Content: systemPrompt})
 	}
 	for i, m := range messages {
+		// Handle OpenAI-native tool call messages (from FormatToolResult)
+		if m.Metadata != nil {
+			if toolCalls, ok := m.Metadata["_openai_tool_calls"]; ok {
+				// Assistant message with tool_calls
+				tcJSON, _ := json.Marshal(toolCalls)
+				raw := json.RawMessage(tcJSON)
+				openAIMsgs = append(openAIMsgs, openAIMessage{
+					Role:      "assistant",
+					Content:   m.Content,
+					ToolCalls: &raw,
+				})
+				continue
+			}
+			if toolCallID, ok := m.Metadata["_openai_tool_call_id"]; ok {
+				// Tool result message
+				openAIMsgs = append(openAIMsgs, openAIMessage{
+					Role:       "tool",
+					Content:    m.Content,
+					ToolCallID: fmt.Sprintf("%v", toolCallID),
+				})
+				continue
+			}
+		}
+
 		isLastUser := i == len(messages)-1 && m.Role == models.RoleUser && len(files) > 0
 
 		if isLastUser {
@@ -236,6 +262,48 @@ func (p *OpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, e
 	}()
 
 	return ch, nil
+}
+
+func (p *OpenAIProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	// OpenAI expects:
+	// 1. Assistant message with tool_calls array
+	// 2. Tool message with role:"tool" and tool_call_id
+	toolCallObj := map[string]interface{}{
+		"id":   toolCall.ID,
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":      toolCall.Name,
+			"arguments": toolCall.Arguments,
+		},
+	}
+
+	assistantMeta := map[string]interface{}{
+		"_openai_tool_calls": []interface{}{toolCallObj},
+	}
+	if assistantText != "" {
+		assistantMeta["_openai_content"] = assistantText
+	}
+
+	assistantMsg := models.Message{
+		Role:     models.RoleAssistant,
+		Content:  assistantText,
+		Metadata: assistantMeta,
+	}
+
+	content := result
+	if isError {
+		content = "Error: " + result
+	}
+	toolResultMsg := models.Message{
+		Role:    models.RoleToolResult,
+		Content: content,
+		Metadata: map[string]interface{}{
+			"_openai_tool_call_id": toolCall.ID,
+			"_openai_tool_name":    toolCall.Name,
+		},
+	}
+
+	return assistantMsg, toolResultMsg
 }
 
 func (p *OpenAIProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {

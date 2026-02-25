@@ -321,6 +321,16 @@ func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, mode
 	return ch, nil
 }
 
+func (p *NeuralGateProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	assistantMsg := models.Message{Role: models.RoleAssistant, Content: assistantText}
+	content := fmt.Sprintf("Tool '%s' result: %s", toolCall.Name, result)
+	if isError {
+		content = fmt.Sprintf("Tool '%s' failed: %s", toolCall.Name, result)
+	}
+	toolResultMsg := models.Message{Role: models.RoleToolResult, Content: content}
+	return assistantMsg, toolResultMsg
+}
+
 func (p *NeuralGateProvider) SendMessageSync(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (*models.Message, error) {
 	return nil, fmt.Errorf("not implemented")
 }

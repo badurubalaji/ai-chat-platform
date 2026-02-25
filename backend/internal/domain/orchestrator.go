@@ -13,11 +13,17 @@ import (
 // Orchestrator handles two-pass tool calling for models without native function calling.
 type Orchestrator struct {
 	adapter *Adapter
+	tools   []ToolConfig // override tools (from registry, etc.)
 }
 
 // NewOrchestrator creates a new orchestrator for the given adapter.
 func NewOrchestrator(adapter *Adapter) *Orchestrator {
 	return &Orchestrator{adapter: adapter}
+}
+
+// NewOrchestratorWithTools creates an orchestrator with explicit tools (no adapter needed).
+func NewOrchestratorWithTools(tools []ToolConfig) *Orchestrator {
+	return &Orchestrator{tools: tools}
 }
 
 // Regex patterns for extracting tool calls from model responses.
@@ -31,9 +37,12 @@ var (
 // BuildSystemPrompt creates the full system prompt with tool schemas injected.
 // For providers that don't support native tool calling.
 func (o *Orchestrator) BuildSystemPrompt() string {
-	base := o.adapter.SystemPrompt()
+	var base string
+	if o.adapter != nil {
+		base = o.adapter.SystemPrompt()
+	}
 
-	tools := o.adapter.Tools()
+	tools := o.getTools()
 	if len(tools) == 0 {
 		return base
 	}
@@ -76,6 +85,25 @@ Important rules:
 `)
 
 	return sb.String()
+}
+
+// BuildSystemPromptWithTools creates a system prompt using explicit tools instead of adapter tools.
+func (o *Orchestrator) BuildSystemPromptWithTools(tools []ToolConfig) string {
+	saved := o.tools
+	o.tools = tools
+	defer func() { o.tools = saved }()
+	return o.BuildSystemPrompt()
+}
+
+// getTools returns tools from override list or adapter.
+func (o *Orchestrator) getTools() []ToolConfig {
+	if len(o.tools) > 0 {
+		return o.tools
+	}
+	if o.adapter != nil {
+		return o.adapter.Tools()
+	}
+	return nil
 }
 
 // ParseToolCall attempts to extract a tool call from a model's text response.

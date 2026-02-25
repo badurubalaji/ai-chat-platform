@@ -45,13 +45,54 @@ type openAIRequest struct {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    interface{}      `json:"content"`
+	ToolCalls  *json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openAITool struct {
-	Type     string      `json:"type"`
-	Function interface{} `json:"function"`
+	Type     string         `json:"type"`
+	Function openAIFunction `json:"function"`
+}
+
+type openAIFunction struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Parameters  interface{} `json:"parameters,omitempty"`
+}
+
+func (p *GenericOpenAIProvider) FormatToolResult(assistantText string, toolCall *models.ToolCall, result string, isError bool) (models.Message, models.Message) {
+	toolCallObj := map[string]interface{}{
+		"id":   toolCall.ID,
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":      toolCall.Name,
+			"arguments": toolCall.Arguments,
+		},
+	}
+	assistantMeta := map[string]interface{}{
+		"_openai_tool_calls": []interface{}{toolCallObj},
+	}
+	assistantMsg := models.Message{
+		Role:     models.RoleAssistant,
+		Content:  assistantText,
+		Metadata: assistantMeta,
+	}
+
+	content := result
+	if isError {
+		content = "Error: " + result
+	}
+	toolResultMsg := models.Message{
+		Role:    models.RoleToolResult,
+		Content: content,
+		Metadata: map[string]interface{}{
+			"_openai_tool_call_id": toolCall.ID,
+			"_openai_tool_name":    toolCall.Name,
+		},
+	}
+	return assistantMsg, toolResultMsg
 }
 
 func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, model, endpoint string, messages []models.Message, tools []models.Tool, systemPrompt string, files []models.FileAttachment) (<-chan models.StreamChunk, error) {
@@ -70,12 +111,49 @@ func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, m
 		openAIMsgs = append(openAIMsgs, openAIMessage{Role: "system", Content: systemPrompt})
 	}
 	for _, m := range messages {
+		// Handle OpenAI-native tool call messages (from FormatToolResult)
+		if m.Metadata != nil {
+			if toolCalls, ok := m.Metadata["_openai_tool_calls"]; ok {
+				tcJSON, _ := json.Marshal(toolCalls)
+				raw := json.RawMessage(tcJSON)
+				openAIMsgs = append(openAIMsgs, openAIMessage{
+					Role:      "assistant",
+					Content:   m.Content,
+					ToolCalls: &raw,
+				})
+				continue
+			}
+			if toolCallID, ok := m.Metadata["_openai_tool_call_id"]; ok {
+				openAIMsgs = append(openAIMsgs, openAIMessage{
+					Role:       "tool",
+					Content:    m.Content,
+					ToolCallID: fmt.Sprintf("%v", toolCallID),
+				})
+				continue
+			}
+		}
 		openAIMsgs = append(openAIMsgs, openAIMessage{Role: string(m.Role), Content: m.Content})
+	}
+
+	// Map tools
+	var openAITools []openAITool
+	if len(tools) > 0 {
+		for _, t := range tools {
+			openAITools = append(openAITools, openAITool{
+				Type: "function",
+				Function: openAIFunction{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			})
+		}
 	}
 
 	reqBody, err := json.Marshal(openAIRequest{
 		Model:    model,
 		Messages: openAIMsgs,
+		Tools:    openAITools,
 		Stream:   true,
 	})
 	if err != nil {
@@ -131,15 +209,39 @@ func (p *GenericOpenAIProvider) SendMessageStream(ctx context.Context, apiKey, m
 			var chunk struct {
 				Choices []struct {
 					Delta struct {
-						Content string `json:"content"`
+						Content   string `json:"content"`
+						ToolCalls []struct {
+							Index    int    `json:"index"`
+							ID       string `json:"id"`
+							Type     string `json:"type"`
+							Function struct {
+								Name      string `json:"name"`
+								Arguments string `json:"arguments"`
+							} `json:"function"`
+						} `json:"tool_calls"`
 					} `json:"delta"`
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
 				if len(chunk.Choices) > 0 {
-					content := chunk.Choices[0].Delta.Content
-					if content != "" {
-						ch <- models.StreamChunk{Content: content, Done: false}
+					delta := chunk.Choices[0].Delta
+
+					if delta.Content != "" {
+						ch <- models.StreamChunk{Content: delta.Content, Done: false}
+					}
+
+					for _, tc := range delta.ToolCalls {
+						toolCall := &models.ToolCall{}
+						if tc.ID != "" {
+							toolCall.ID = tc.ID
+							toolCall.Name = tc.Function.Name
+						}
+						if tc.Function.Arguments != "" {
+							toolCall.Arguments = tc.Function.Arguments
+						}
+						if toolCall.ID != "" || toolCall.Name != "" || toolCall.Arguments != "" {
+							ch <- models.StreamChunk{ToolCall: toolCall, Done: false}
+						}
 					}
 				}
 			}

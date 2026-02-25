@@ -61,13 +61,9 @@ func NewHandler(s store.Store, cfg *config.Config, adapter *domain.Adapter) *Han
 	// Create tool registry (merges adapter + DB tools)
 	h.registry = domain.NewToolRegistry(adapter, s)
 
-	if adapter != nil {
-		h.orchestrator = domain.NewOrchestrator(adapter)
-		h.executor = domain.NewExecutorWithRegistry(adapter, h.registry)
-	} else {
-		// No adapter but still support registry tools
-		h.executor = domain.NewExecutorWithRegistry(nil, h.registry)
-	}
+	// Always create orchestrator (for two-pass fallback with non-native-tool providers)
+	h.orchestrator = domain.NewOrchestrator(adapter)
+	h.executor = domain.NewExecutorWithRegistry(adapter, h.registry)
 
 	// Register providers
 	cp := claude.NewClaudeProvider()
