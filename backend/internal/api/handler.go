@@ -46,6 +46,7 @@ type Handler struct {
 	adapter              *domain.Adapter
 	orchestrator         *domain.Orchestrator
 	executor             *domain.Executor
+	registry             *domain.ToolRegistry
 	pendingConfirmations sync.Map // map[string]*PendingConfirmation
 }
 
@@ -57,9 +58,15 @@ func NewHandler(s store.Store, cfg *config.Config, adapter *domain.Adapter) *Han
 		adapter:   adapter,
 	}
 
+	// Create tool registry (merges adapter + DB tools)
+	h.registry = domain.NewToolRegistry(adapter, s)
+
 	if adapter != nil {
 		h.orchestrator = domain.NewOrchestrator(adapter)
-		h.executor = domain.NewExecutor(adapter)
+		h.executor = domain.NewExecutorWithRegistry(adapter, h.registry)
+	} else {
+		// No adapter but still support registry tools
+		h.executor = domain.NewExecutorWithRegistry(nil, h.registry)
 	}
 
 	// Register providers
@@ -112,6 +119,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleUsage(w, r)
 	case strings.HasPrefix(path, "/api/v1/ai/providers"):
 		h.handleProviders(w, r)
+	case strings.HasPrefix(path, "/api/v1/ai/registry/tools"):
+		h.handleRegistry(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -298,62 +307,97 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Determine tool calling strategy
-	hasTools := h.adapter != nil && h.adapter.HasTools()
-	useNativeTools := hasTools && provider.SupportsTools()
-	useTwoPass := hasTools && !provider.SupportsTools()
-
-	// Resolve system prompt and tools
 	systemPrompt := h.resolveSystemPrompt()
-	var tools []models.Tool
 
-	if useNativeTools {
-		tools = h.adapter.ToolsForProvider()
-		log.Printf("[CHAT] Native tool calling with %d tools", len(tools))
-	} else if useTwoPass {
-		systemPrompt = h.orchestrator.BuildSystemPrompt()
-		log.Printf("[CHAT] Two-pass tool calling via prompt injection")
-	}
+	// Create and run the agent
+	agent := domain.NewAgent(domain.AgentConfig{
+		Provider:     provider,
+		Executor:     h.executor,
+		Registry:     h.registry,
+		Orchestrator: h.orchestrator,
+		Adapter:      h.adapter,
+	})
 
-	// First pass: send to model
-	log.Printf("[CHAT] Sending %d messages to %s (model: %s)", len(providerMessages), providerName, modelName)
-	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, providerMessages, tools, systemPrompt, req.Files)
-	if err != nil {
-		log.Printf("[CHAT] Stream error: %v", err)
-		h.sendSSE(w, "error", err.Error())
-		return
-	}
+	// Confirmation callback — bridges agent to SSE confirmation flow
+	confirmFn := func(confirmID, toolName, description string, params json.RawMessage) (bool, error) {
+		pending := &PendingConfirmation{
+			ID:             confirmID,
+			ConversationID: convoID,
+			ToolName:       toolName,
+			Arguments:      params,
+			CreatedAt:      time.Now(),
+			ResultChan:     make(chan bool, 1),
+		}
+		h.pendingConfirmations.Store(confirmID, pending)
 
-	// Consume stream
-	fullResponse, totalInputTokens, totalOutputTokens, detectedToolCall := h.consumeStream(w, stream, useTwoPass)
+		confirmData, _ := json.Marshal(struct {
+			ConfirmationID string          `json:"confirmation_id"`
+			Tool           string          `json:"tool"`
+			Description    string          `json:"description"`
+			Params         json.RawMessage `json:"params"`
+		}{confirmID, toolName, description, params})
+		h.sendSSE(w, "tool_confirm", string(confirmData))
 
-	// Check for tool calls in two-pass mode (parse from text response)
-	if useTwoPass && detectedToolCall == nil && fullResponse != "" {
-		if tc, _ := h.orchestrator.ParseToolCall(fullResponse); tc != nil {
-			detectedToolCall = tc
-			log.Printf("[CHAT] Two-pass: detected tool call: %s", tc.Name)
+		select {
+		case approved := <-pending.ResultChan:
+			h.pendingConfirmations.Delete(confirmID)
+			return approved, nil
+		case <-time.After(5 * time.Minute):
+			h.pendingConfirmations.Delete(confirmID)
+			return false, fmt.Errorf("confirmation timed out")
+		case <-r.Context().Done():
+			h.pendingConfirmations.Delete(confirmID)
+			return false, r.Context().Err()
 		}
 	}
 
-	// Handle tool execution if a tool call was detected
-	if detectedToolCall != nil && h.adapter != nil {
-		h.handleToolExecution(w, r, detectedToolCall, provider, apiKey, modelName, endpoint,
-			providerMessages, systemPrompt, tools, convoID, tenantID, userID,
-			&fullResponse, &totalInputTokens, &totalOutputTokens)
-	}
+	events, _ := agent.Run(r.Context(), domain.RunParams{
+		APIKey:       apiKey,
+		Model:        modelName,
+		Endpoint:     endpoint,
+		Messages:     providerMessages,
+		SystemPrompt: systemPrompt,
+		Files:        req.Files,
+		TenantID:     tenantID,
+		UserID:       userID,
+		ConvoID:      convoID,
+		ConfirmFn:    confirmFn,
+	})
 
-	// Send done event
-	h.sendDoneEvent(w, convoID, totalInputTokens, totalOutputTokens)
+	// Stream agent events to client
+	fullResponse := ""
+	var totalInputTokens, totalOutputTokens int
+	for event := range events {
+		switch event.Type {
+		case "_response":
+			// Internal event: final response text for saving
+			fullResponse = event.Data
+		case "done":
+			var doneData struct {
+				Usage *models.Usage `json:"usage"`
+			}
+			json.Unmarshal([]byte(event.Data), &doneData)
+			if doneData.Usage != nil {
+				totalInputTokens = doneData.Usage.InputTokens
+				totalOutputTokens = doneData.Usage.OutputTokens
+			}
+			h.sendSSE(w, event.Type, event.Data)
+		default:
+			h.sendSSE(w, event.Type, event.Data)
+		}
+	}
 
 	// Save assistant message
-	asstMsg := &models.Message{
-		ID:             uuid.New(),
-		ConversationID: convoID,
-		Role:           models.RoleAssistant,
-		Content:        fullResponse,
-		CreatedAt:      time.Now(),
+	if fullResponse != "" {
+		asstMsg := &models.Message{
+			ID:             uuid.New(),
+			ConversationID: convoID,
+			Role:           models.RoleAssistant,
+			Content:        fullResponse,
+			CreatedAt:      time.Now(),
+		}
+		h.store.CreateMessage(r.Context(), asstMsg)
 	}
-	h.store.CreateMessage(r.Context(), asstMsg)
 
 	// Estimate tokens if not provided
 	if totalInputTokens == 0 {
@@ -403,221 +447,6 @@ func (h *Handler) resolveProvider(ctx context.Context, tenantID string) (provide
 	}
 
 	return nil, "", "", "", "", fmt.Errorf("no provider configured")
-}
-
-// consumeStream reads the SSE stream, streaming chunks to the client.
-// For two-pass mode, it buffers internally. Returns the full response and any detected tool call.
-func (h *Handler) consumeStream(w http.ResponseWriter, stream <-chan models.StreamChunk, isTwoPass bool) (string, int, int, *models.ToolCall) {
-	fullResponse := ""
-	var totalInputTokens, totalOutputTokens int
-	var detectedToolCall *models.ToolCall
-	chunkCount := 0
-
-	for chunk := range stream {
-		if chunk.Error != nil {
-			log.Printf("[CHAT] Chunk error: %v", chunk.Error)
-			h.sendSSE(w, "error", chunk.Error.Error())
-			return fullResponse, totalInputTokens, totalOutputTokens, nil
-		}
-
-		if chunk.Done {
-			if chunk.Usage != nil {
-				totalInputTokens = chunk.Usage.InputTokens
-				totalOutputTokens = chunk.Usage.OutputTokens
-			}
-			continue
-		}
-
-		chunkCount++
-		fullResponse += chunk.Content
-
-		// Detect native tool calls from providers
-		if chunk.ToolCall != nil {
-			detectedToolCall = chunk.ToolCall
-		}
-
-		// Stream chunks to client (for both modes — frontend handles replacement)
-		data, _ := json.Marshal(struct {
-			Content  string           `json:"content"`
-			ToolCall *models.ToolCall `json:"tool_call,omitempty"`
-		}{
-			Content:  chunk.Content,
-			ToolCall: chunk.ToolCall,
-		})
-		h.sendSSE(w, "chunk", string(data))
-	}
-
-	if chunkCount == 0 {
-		log.Printf("[CHAT] Stream closed with 0 chunks")
-	}
-
-	return fullResponse, totalInputTokens, totalOutputTokens, detectedToolCall
-}
-
-// handleToolExecution processes a tool call: confirmation, execution, and second pass.
-func (h *Handler) handleToolExecution(
-	w http.ResponseWriter, r *http.Request,
-	toolCall *models.ToolCall,
-	provider providers.ChatProvider, apiKey, modelName, endpoint string,
-	providerMessages []models.Message, systemPrompt string, tools []models.Tool,
-	convoID uuid.UUID, tenantID string, userID uuid.UUID,
-	fullResponse *string, totalInputTokens, totalOutputTokens *int,
-) {
-	toolConfig, ok := h.adapter.ToolByName(toolCall.Name)
-	if !ok {
-		log.Printf("[CHAT] Unknown tool: %s", toolCall.Name)
-		return
-	}
-
-	arguments := json.RawMessage(toolCall.Arguments)
-
-	// Create audit record
-	auditExec := domain.NewToolExecution(tenantID, userID, convoID, toolCall.Name, arguments)
-
-	// Check if confirmation is required
-	if toolConfig.RequiresConfirmation {
-		confirmID := uuid.New().String()[:12]
-		pending := &PendingConfirmation{
-			ID:             confirmID,
-			ConversationID: convoID,
-			ToolName:       toolCall.Name,
-			Arguments:      arguments,
-			CreatedAt:      time.Now(),
-			ResultChan:     make(chan bool, 1),
-		}
-		h.pendingConfirmations.Store(confirmID, pending)
-
-		// Emit tool_confirm SSE event
-		confirmData, _ := json.Marshal(struct {
-			ConfirmationID string          `json:"confirmation_id"`
-			Tool           string          `json:"tool"`
-			Description    string          `json:"description"`
-			Params         json.RawMessage `json:"params"`
-		}{
-			ConfirmationID: confirmID,
-			Tool:           toolCall.Name,
-			Description:    toolConfig.Description,
-			Params:         arguments,
-		})
-		h.sendSSE(w, "tool_confirm", string(confirmData))
-
-		// Wait for confirmation (with timeout)
-		select {
-		case approved := <-pending.ResultChan:
-			h.pendingConfirmations.Delete(confirmID)
-			if !approved {
-				domain.MarkCancelled(auditExec)
-				h.store.LogToolExecution(r.Context(), auditExec)
-				log.Printf("[CHAT] Tool %s cancelled by user", toolCall.Name)
-				// Send cancellation to model for graceful response
-				h.sendToolCancelled(w, r, provider, apiKey, modelName, endpoint,
-					providerMessages, systemPrompt, tools, toolCall.Name,
-					fullResponse, totalInputTokens, totalOutputTokens)
-				return
-			}
-			auditExec.ConfirmedByUser = true
-		case <-time.After(5 * time.Minute):
-			h.pendingConfirmations.Delete(confirmID)
-			domain.MarkCancelled(auditExec)
-			h.store.LogToolExecution(r.Context(), auditExec)
-			log.Printf("[CHAT] Tool %s confirmation timed out", toolCall.Name)
-			return
-		case <-r.Context().Done():
-			h.pendingConfirmations.Delete(confirmID)
-			return
-		}
-	}
-
-	// Execute tool
-	h.sendSSE(w, "tool_call", fmt.Sprintf(`{"tool":"%s","status":"executing"}`, toolCall.Name))
-
-	start := time.Now()
-	result, err := h.executor.ExecuteTool(r.Context(), toolCall.Name, arguments, tenantID, userID.String())
-	durationMs := int(time.Since(start).Milliseconds())
-
-	if err != nil {
-		domain.MarkError(auditExec, err.Error(), durationMs)
-		h.store.LogToolExecution(r.Context(), auditExec)
-		h.sendSSE(w, "tool_result", fmt.Sprintf(`{"tool":"%s","status":"error","error":"%s"}`, toolCall.Name, err.Error()))
-		log.Printf("[CHAT] Tool %s failed: %v", toolCall.Name, err)
-	} else {
-		domain.MarkSuccess(auditExec, result, durationMs)
-		h.store.LogToolExecution(r.Context(), auditExec)
-		h.sendSSE(w, "tool_result", fmt.Sprintf(`{"tool":"%s","status":"complete"}`, toolCall.Name))
-		log.Printf("[CHAT] Tool %s executed in %dms", toolCall.Name, durationMs)
-	}
-
-	// Second pass: send tool result to model for natural language response
-	toolResultContent := string(result)
-	if err != nil {
-		toolResultContent = fmt.Sprintf("Tool execution failed: %s", err.Error())
-	}
-
-	// Build messages with tool context
-	secondPassMessages := append(providerMessages, models.Message{
-		Role:    models.RoleAssistant,
-		Content: *fullResponse,
-	}, models.Message{
-		Role:    models.RoleToolResult,
-		Content: fmt.Sprintf("Tool '%s' result: %s", toolCall.Name, toolResultContent),
-	})
-
-	secondStream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, secondPassMessages, tools, systemPrompt, nil)
-	if err != nil {
-		log.Printf("[CHAT] Second pass error: %v", err)
-		return
-	}
-
-	// Stream second pass response
-	secondResponse := ""
-	for chunk := range secondStream {
-		if chunk.Error != nil || chunk.Done {
-			if chunk.Done && chunk.Usage != nil {
-				*totalInputTokens += chunk.Usage.InputTokens
-				*totalOutputTokens += chunk.Usage.OutputTokens
-			}
-			continue
-		}
-		secondResponse += chunk.Content
-		data, _ := json.Marshal(struct {
-			Content string `json:"content"`
-		}{Content: chunk.Content})
-		h.sendSSE(w, "chunk", string(data))
-	}
-
-	*fullResponse = secondResponse
-}
-
-// sendToolCancelled sends a cancellation message to the model for a graceful response.
-func (h *Handler) sendToolCancelled(
-	w http.ResponseWriter, r *http.Request,
-	provider providers.ChatProvider, apiKey, modelName, endpoint string,
-	providerMessages []models.Message, systemPrompt string, tools []models.Tool,
-	toolName string,
-	fullResponse *string, totalInputTokens, totalOutputTokens *int,
-) {
-	cancelMessages := append(providerMessages, models.Message{
-		Role:    models.RoleSystem,
-		Content: fmt.Sprintf("The user cancelled the '%s' action. Acknowledge this gracefully.", toolName),
-	})
-
-	stream, err := provider.SendMessageStream(r.Context(), apiKey, modelName, endpoint, cancelMessages, tools, systemPrompt, nil)
-	if err != nil {
-		return
-	}
-
-	response := ""
-	for chunk := range stream {
-		if chunk.Error != nil || chunk.Done {
-			continue
-		}
-		response += chunk.Content
-		data, _ := json.Marshal(struct {
-			Content string `json:"content"`
-		}{Content: chunk.Content})
-		h.sendSSE(w, "chunk", string(data))
-	}
-	*fullResponse = response
 }
 
 // handleConfirm handles POST /api/v1/ai/chat/confirm
@@ -1003,4 +832,158 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		{"id": "neuralgate", "name": "NeuralGate AI Gateway", "icon": "hub", "requires_endpoint": true},
 	}
 	json.NewEncoder(w).Encode(providers)
+}
+
+// -- Tool Registry Handlers --
+
+func (h *Handler) handleRegistry(w http.ResponseWriter, r *http.Request) {
+	// Extract tool ID from path: /api/v1/ai/registry/tools/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/ai/registry/tools")
+	path = strings.TrimPrefix(path, "/")
+
+	switch r.Method {
+	case "GET":
+		h.handleListTools(w, r)
+	case "POST":
+		h.handleRegisterTool(w, r)
+	case "PUT":
+		if path == "" {
+			http.Error(w, "tool ID required", http.StatusBadRequest)
+			return
+		}
+		h.handleUpdateTool(w, r, path)
+	case "DELETE":
+		if path == "" {
+			http.Error(w, "tool ID required", http.StatusBadRequest)
+			return
+		}
+		h.handleDeleteTool(w, r, path)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	var req models.ToolRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.AppName == "" || req.ToolName == "" || req.Description == "" {
+		http.Error(w, "app_name, tool_name, and description are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Execution) == 0 {
+		http.Error(w, "execution config is required", http.StatusBadRequest)
+		return
+	}
+
+	tool := &models.RegisteredTool{
+		ID:                   uuid.New(),
+		TenantID:             tenantID,
+		AppName:              req.AppName,
+		ToolName:             req.ToolName,
+		Description:          req.Description,
+		Parameters:           req.Parameters,
+		ExecutionConfig:      req.Execution,
+		RequiresConfirmation: req.RequiresConfirmation,
+		Enabled:              true,
+	}
+
+	// Default empty parameters to {}
+	if len(tool.Parameters) == 0 {
+		tool.Parameters = json.RawMessage(`{}`)
+	}
+
+	if err := h.store.RegisterTool(r.Context(), tool); err != nil {
+		http.Error(w, "failed to register tool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(tool)
+}
+
+func (h *Handler) handleListTools(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	appName := r.URL.Query().Get("app_name")
+
+	tools, err := h.store.ListTools(r.Context(), tenantID, appName)
+	if err != nil {
+		http.Error(w, "failed to list tools: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if tools == nil {
+		tools = []*models.RegisteredTool{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tools)
+}
+
+func (h *Handler) handleUpdateTool(w http.ResponseWriter, r *http.Request, toolID string) {
+	id, err := uuid.Parse(toolID)
+	if err != nil {
+		http.Error(w, "invalid tool ID", http.StatusBadRequest)
+		return
+	}
+
+	existing, err := h.store.GetTool(r.Context(), id)
+	if err != nil {
+		http.Error(w, "tool not found", http.StatusNotFound)
+		return
+	}
+
+	var req models.ToolRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Update fields that were provided
+	if req.Description != "" {
+		existing.Description = req.Description
+	}
+	if len(req.Parameters) > 0 {
+		existing.Parameters = req.Parameters
+	}
+	if len(req.Execution) > 0 {
+		existing.ExecutionConfig = req.Execution
+	}
+	existing.RequiresConfirmation = req.RequiresConfirmation
+
+	if err := h.store.UpdateTool(r.Context(), existing); err != nil {
+		http.Error(w, "failed to update tool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(existing)
+}
+
+func (h *Handler) handleDeleteTool(w http.ResponseWriter, r *http.Request, toolID string) {
+	id, err := uuid.Parse(toolID)
+	if err != nil {
+		http.Error(w, "invalid tool ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.store.DeleteTool(r.Context(), id); err != nil {
+		http.Error(w, "failed to delete tool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

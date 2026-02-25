@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { CdkTextareaAutosize, TextFieldModule } from '@angular/cdk/text-field';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { AiMessageComponent } from '../ai-message/ai-message.component';
@@ -11,6 +12,7 @@ import { AiEmptyStateComponent } from '../ai-empty-state/ai-empty-state.componen
 import { AiChatService } from '../../services/ai-chat.service';
 import { AiContextService } from '../../services/ai-context.service';
 import { AiMessage, AiProposedAction, AiToolConfirmation } from '../../models/ai-chat.model';
+import { Subscription } from 'rxjs';
 
 const ACCEPTED_TYPES = 'image/png,image/jpeg,image/webp,application/pdf,audio/mpeg,audio/wav,video/mp4';
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
@@ -28,6 +30,7 @@ const MAX_FILES = 5;
     MatInputModule,
     MatProgressSpinnerModule,
     MatChipsModule,
+    TextFieldModule,
     AiMessageComponent,
     AiEmptyStateComponent
   ],
@@ -89,18 +92,27 @@ const MAX_FILES = 5;
              (change)="onFilesSelected($event)"
              style="display: none">
       <mat-form-field appearance="outline" class="full-width">
-        <input matInput 
-               [(ngModel)]="userInput" 
-               (keyup.enter)="sendMessage()" 
-               placeholder="Ask AI..." 
-               [disabled]="isLoading()">
+        <textarea matInput
+               cdkTextareaAutosize
+               cdkAutosizeMinRows="1"
+               cdkAutosizeMaxRows="5"
+               [(ngModel)]="userInput"
+               (keydown.enter)="onEnterKey($event)"
+               placeholder="Ask AI..."
+               [disabled]="isLoading()"></textarea>
         <div matSuffix class="input-actions">
           <button mat-icon-button (click)="fileInput.click()" [disabled]="isLoading()" matTooltip="Attach files">
             <mat-icon>attach_file</mat-icon>
           </button>
-          <button mat-icon-button (click)="sendMessage()" [disabled]="(!userInput.trim() && selectedFiles().length === 0) || isLoading()">
-            <mat-icon>send</mat-icon>
-          </button>
+          @if (isLoading()) {
+            <button mat-icon-button (click)="cancelRequest()" class="cancel-btn" matTooltip="Stop generating">
+              <mat-icon>stop_circle</mat-icon>
+            </button>
+          } @else {
+            <button mat-icon-button (click)="sendMessage()" [disabled]="!userInput.trim() && selectedFiles().length === 0">
+              <mat-icon>send</mat-icon>
+            </button>
+          }
         </div>
       </mat-form-field>
     </div>
@@ -120,6 +132,7 @@ const MAX_FILES = 5;
       flex-direction: column;
       gap: 12px;
       position: relative;
+      background: var(--ai-chat-bg, var(--ai-sidebar-bg, #fff));
     }
 
     .welcome-text {
@@ -149,12 +162,21 @@ const MAX_FILES = 5;
 
     .full-width {
       width: 100%;
+
+      textarea {
+        resize: none;
+        line-height: 1.4;
+      }
     }
 
     .input-actions {
       display: flex;
       align-items: center;
       gap: 0;
+    }
+
+    .cancel-btn {
+      color: var(--mat-sys-error, #b3261e);
     }
 
     .typing-indicator {
@@ -266,6 +288,7 @@ export class AiChatComponent implements OnChanges {
   readonly acceptedTypes = ACCEPTED_TYPES;
 
   private chatService = inject(AiChatService);
+  private activeSubscription: Subscription | null = null;
   private contextService = inject(AiContextService);
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -347,6 +370,24 @@ export class AiChatComponent implements OnChanges {
 
   // -- Messaging --
 
+  cancelRequest(): void {
+    if (this.activeSubscription) {
+      this.activeSubscription.unsubscribe();
+      this.activeSubscription = null;
+    }
+    this.chatService.cancelRequest();
+    this.isLoading.set(false);
+    this.isTyping.set(false);
+  }
+
+  onEnterKey(event: Event): void {
+    const ke = event as KeyboardEvent;
+    if (!ke.shiftKey) {
+      ke.preventDefault();
+      this.sendMessage();
+    }
+  }
+
   sendMessage(): void {
     const files = this.selectedFiles();
     if ((!this.userInput.trim() && files.length === 0) || this.isLoading()) return;
@@ -378,7 +419,7 @@ export class AiChatComponent implements OnChanges {
     // Include page context if available
     const context = this.contextService.getContext();
 
-    this.chatService.sendMessage(this.conversationId, content, context, files.length > 0 ? files : undefined).subscribe({
+    this.activeSubscription = this.chatService.sendMessage(this.conversationId, content, context, files.length > 0 ? files : undefined).subscribe({
       next: (chunk) => {
         this.isTyping.set(false);
         if (chunk.tool_confirm) {
@@ -428,6 +469,7 @@ export class AiChatComponent implements OnChanges {
       },
       complete: () => {
         this.isLoading.set(false);
+        this.activeSubscription = null;
       }
     });
   }

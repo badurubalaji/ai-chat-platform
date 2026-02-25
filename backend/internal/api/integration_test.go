@@ -106,6 +106,26 @@ func (s *InMemoryStore) LogToolExecution(ctx context.Context, exec *models.ToolE
 	return nil
 }
 
+func (s *InMemoryStore) RegisterTool(ctx context.Context, tool *models.RegisteredTool) error {
+	return nil
+}
+
+func (s *InMemoryStore) GetTool(ctx context.Context, id uuid.UUID) (*models.RegisteredTool, error) {
+	return nil, assert.AnError
+}
+
+func (s *InMemoryStore) ListTools(ctx context.Context, tenantID string, appName string) ([]*models.RegisteredTool, error) {
+	return nil, nil
+}
+
+func (s *InMemoryStore) UpdateTool(ctx context.Context, tool *models.RegisteredTool) error {
+	return nil
+}
+
+func (s *InMemoryStore) DeleteTool(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
+
 func TestIntegration_ConfigFlow(t *testing.T) {
 	// Setup
 	memStore := NewInMemoryStore()

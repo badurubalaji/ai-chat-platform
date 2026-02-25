@@ -24,6 +24,12 @@ type Store interface {
 	LogUsage(ctx context.Context, usage *models.UsageLog) error
 	GetUsageStats(ctx context.Context, tenantID string, days int) (*models.UsageStats, error)
 	LogToolExecution(ctx context.Context, exec *models.ToolExecution) error
+	// Tool Registry
+	RegisterTool(ctx context.Context, tool *models.RegisteredTool) error
+	GetTool(ctx context.Context, id uuid.UUID) (*models.RegisteredTool, error)
+	ListTools(ctx context.Context, tenantID string, appName string) ([]*models.RegisteredTool, error)
+	UpdateTool(ctx context.Context, tool *models.RegisteredTool) error
+	DeleteTool(ctx context.Context, id uuid.UUID) error
 }
 
 type PostgresStore struct {
@@ -208,6 +214,91 @@ func (s *PostgresStore) DeleteProviderConfig(ctx context.Context, tenantID strin
 
 func (s *PostgresStore) DeleteConversation(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM ai_conversations WHERE id = $1`
+	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+// -- Tool Registry --
+
+func (s *PostgresStore) RegisterTool(ctx context.Context, tool *models.RegisteredTool) error {
+	query := `
+		INSERT INTO ai_tool_registry (id, tenant_id, app_name, tool_name, description, parameters, execution_config, requires_confirmation, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (tenant_id, app_name, tool_name) DO UPDATE SET
+			description = EXCLUDED.description,
+			parameters = EXCLUDED.parameters,
+			execution_config = EXCLUDED.execution_config,
+			requires_confirmation = EXCLUDED.requires_confirmation,
+			enabled = EXCLUDED.enabled,
+			updated_at = NOW()
+		RETURNING created_at, updated_at`
+	return s.db.QueryRowContext(ctx, query,
+		tool.ID, tool.TenantID, tool.AppName, tool.ToolName, tool.Description,
+		tool.Parameters, tool.ExecutionConfig, tool.RequiresConfirmation, tool.Enabled,
+	).Scan(&tool.CreatedAt, &tool.UpdatedAt)
+}
+
+func (s *PostgresStore) GetTool(ctx context.Context, id uuid.UUID) (*models.RegisteredTool, error) {
+	query := `SELECT id, tenant_id, app_name, tool_name, description, parameters, execution_config, requires_confirmation, enabled, created_at, updated_at
+		FROM ai_tool_registry WHERE id = $1`
+	var t models.RegisteredTool
+	err := s.db.QueryRowContext(ctx, query, id).Scan(
+		&t.ID, &t.TenantID, &t.AppName, &t.ToolName, &t.Description,
+		&t.Parameters, &t.ExecutionConfig, &t.RequiresConfirmation, &t.Enabled,
+		&t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (s *PostgresStore) ListTools(ctx context.Context, tenantID string, appName string) ([]*models.RegisteredTool, error) {
+	var rows *sql.Rows
+	var err error
+
+	if appName != "" {
+		query := `SELECT id, tenant_id, app_name, tool_name, description, parameters, execution_config, requires_confirmation, enabled, created_at, updated_at
+			FROM ai_tool_registry WHERE tenant_id = $1 AND app_name = $2 AND enabled = true ORDER BY app_name, tool_name`
+		rows, err = s.db.QueryContext(ctx, query, tenantID, appName)
+	} else {
+		query := `SELECT id, tenant_id, app_name, tool_name, description, parameters, execution_config, requires_confirmation, enabled, created_at, updated_at
+			FROM ai_tool_registry WHERE tenant_id = $1 AND enabled = true ORDER BY app_name, tool_name`
+		rows, err = s.db.QueryContext(ctx, query, tenantID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tools []*models.RegisteredTool
+	for rows.Next() {
+		var t models.RegisteredTool
+		if err := rows.Scan(
+			&t.ID, &t.TenantID, &t.AppName, &t.ToolName, &t.Description,
+			&t.Parameters, &t.ExecutionConfig, &t.RequiresConfirmation, &t.Enabled,
+			&t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		tools = append(tools, &t)
+	}
+	return tools, nil
+}
+
+func (s *PostgresStore) UpdateTool(ctx context.Context, tool *models.RegisteredTool) error {
+	query := `UPDATE ai_tool_registry SET
+		description = $2, parameters = $3, execution_config = $4,
+		requires_confirmation = $5, enabled = $6, updated_at = NOW()
+		WHERE id = $1 RETURNING updated_at`
+	return s.db.QueryRowContext(ctx, query,
+		tool.ID, tool.Description, tool.Parameters, tool.ExecutionConfig,
+		tool.RequiresConfirmation, tool.Enabled,
+	).Scan(&tool.UpdatedAt)
+}
+
+func (s *PostgresStore) DeleteTool(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM ai_tool_registry WHERE id = $1`
 	_, err := s.db.ExecContext(ctx, query, id)
 	return err
 }

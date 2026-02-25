@@ -28,20 +28,23 @@ import { AiContextService } from '../../services/ai-context.service';
       <div class="resize-handle" (mousedown)="startResize($event)"></div>
       
       <div class="sidebar-header">
-        <h2>AI Assistant</h2>
-        <div class="header-meta">
+        <div class="header-left">
+          <h2>AI Assistant</h2>
           @if (contextService.hasContext()) {
             <span class="context-badge" [matTooltip]="'Context: ' + contextService.currentPage()">
               <mat-icon>info</mat-icon>
             </span>
           }
         </div>
-        <div class="actions">
+        <div class="header-actions">
           <button mat-icon-button (click)="toggleHistory()" matTooltip="History">
             <mat-icon>history</mat-icon>
           </button>
           <button mat-icon-button (click)="createNewChat()" matTooltip="New Chat">
             <mat-icon>add</mat-icon>
+          </button>
+          <button mat-icon-button (click)="closeRequested.emit()" matTooltip="Close">
+            <mat-icon>close</mat-icon>
           </button>
         </div>
       </div>
@@ -100,18 +103,29 @@ import { AiContextService } from '../../services/ai-context.service';
     }
 
     .sidebar-header {
-      padding: 16px;
+      padding: 8px 8px 8px 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       border-bottom: 1px solid var(--ai-sidebar-border, #e0e0e0);
-      
-      h2 { margin: 0; font-size: 1.2rem; }
+      gap: 8px;
+      min-height: 48px;
     }
 
-    .header-meta {
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       flex: 1;
-      margin-left: 8px;
+      min-width: 0;
+
+      h2 { margin: 0; font-size: 1.1rem; white-space: nowrap; }
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
     }
 
     .context-badge {
@@ -152,6 +166,7 @@ import { AiContextService } from '../../services/ai-context.service';
 })
 export class AiSidebarComponent implements OnInit {
   @Output() actionRequested = new EventEmitter<AiProposedAction>();
+  @Output() closeRequested = new EventEmitter<void>();
 
   readonly contextService = inject(AiContextService);
   private readonly chatService = inject(AiChatService);

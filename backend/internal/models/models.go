@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,31 @@ type StreamChunk struct {
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+}
+
+// RegisteredTool represents a dynamically registered tool in the registry
+type RegisteredTool struct {
+	ID                   uuid.UUID       `json:"id"`
+	TenantID             string          `json:"tenant_id"`
+	AppName              string          `json:"app_name"`
+	ToolName             string          `json:"tool_name"`
+	Description          string          `json:"description"`
+	Parameters           json.RawMessage `json:"parameters"`
+	ExecutionConfig      json.RawMessage `json:"execution_config"`
+	RequiresConfirmation bool            `json:"requires_confirmation"`
+	Enabled              bool            `json:"enabled"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+}
+
+// ToolRegistrationRequest is the request body for registering a tool
+type ToolRegistrationRequest struct {
+	AppName              string          `json:"app_name"`
+	ToolName             string          `json:"tool_name"`
+	Description          string          `json:"description"`
+	Parameters           json.RawMessage `json:"parameters,omitempty"`
+	Execution            json.RawMessage `json:"execution"`
+	RequiresConfirmation bool            `json:"requires_confirmation"`
 }
 
 // ToolExecution represents an audit log entry for a tool execution

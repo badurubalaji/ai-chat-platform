@@ -9,6 +9,7 @@ import { AiStreamChunk, AiConversation, AiMessage, AiToolConfirmation } from '..
 })
 export class AiChatService {
     private apiUrl: string;
+    private abortController: AbortController | null = null;
 
     constructor(
         @Inject(AI_CHAT_CONFIG) private config: AiChatConfig,
@@ -21,6 +22,7 @@ export class AiChatService {
     sendMessage(conversationId: string | null, message: string, context?: Record<string, unknown> | null, files?: File[]): Observable<AiStreamChunk> {
         return new Observable((observer: Observer<AiStreamChunk>) => {
             const url = `${this.apiUrl}/chat`;
+            this.abortController = new AbortController();
 
             this.config.authTokenFn().subscribe({
                 next: (token) => {
@@ -28,7 +30,17 @@ export class AiChatService {
                 },
                 error: (err) => observer.error(err)
             });
+
+            // Cleanup on unsubscribe
+            return () => this.cancelRequest();
         });
+    }
+
+    cancelRequest(): void {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
     }
 
     private async fetchStream(
@@ -74,7 +86,8 @@ export class AiChatService {
             const response = await fetch(url, {
                 method: 'POST',
                 headers,
-                body
+                body,
+                signal: this.abortController?.signal
             });
 
             if (!response.ok) {

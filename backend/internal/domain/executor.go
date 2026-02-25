@@ -14,7 +14,8 @@ import (
 
 // Executor handles HTTP-based tool execution against internal services.
 type Executor struct {
-	adapter *Adapter
+	adapter  *Adapter
+	registry *ToolRegistry
 }
 
 // NewExecutor creates a new tool executor for the given adapter.
@@ -22,13 +23,36 @@ func NewExecutor(adapter *Adapter) *Executor {
 	return &Executor{adapter: adapter}
 }
 
+// NewExecutorWithRegistry creates a tool executor that resolves tools from the registry.
+func NewExecutorWithRegistry(adapter *Adapter, registry *ToolRegistry) *Executor {
+	return &Executor{adapter: adapter, registry: registry}
+}
+
+// ExecuteToolConfig executes a tool given its config directly.
+func (e *Executor) ExecuteToolConfig(ctx context.Context, tool *ToolConfig, arguments json.RawMessage, tenantID, userID string) (json.RawMessage, error) {
+	return e.executeHTTP(ctx, tool, arguments, tenantID, userID)
+}
+
 // ExecuteTool executes a tool by making an HTTP call to the configured internal service.
 // Returns the response body as json.RawMessage, or an error.
 func (e *Executor) ExecuteTool(ctx context.Context, toolName string, arguments json.RawMessage, tenantID, userID string) (json.RawMessage, error) {
+	// Try registry first (includes adapter tools)
+	if e.registry != nil {
+		if tc, ok := e.registry.LookupTool(ctx, tenantID, toolName); ok {
+			return e.executeHTTP(ctx, tc, arguments, tenantID, userID)
+		}
+	}
+
+	// Fallback to adapter-only lookup
 	tool, ok := e.adapter.ToolByName(toolName)
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
+
+	return e.executeHTTP(ctx, tool, arguments, tenantID, userID)
+}
+
+func (e *Executor) executeHTTP(ctx context.Context, tool *ToolConfig, arguments json.RawMessage, tenantID, userID string) (json.RawMessage, error) {
 
 	// Parse arguments
 	var args map[string]interface{}

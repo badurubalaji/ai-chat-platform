@@ -30,7 +30,13 @@ type NeuralGateProvider struct {
 
 func NewNeuralGateProvider() *NeuralGateProvider {
 	return &NeuralGateProvider{
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{
+			// No global timeout — streaming responses can be long-lived.
+			// ResponseHeaderTimeout handles the case where the server never responds.
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 120 * time.Second,
+			},
+		},
 	}
 }
 
@@ -74,6 +80,7 @@ type neuralGateRequest struct {
 	Model    string              `json:"model,omitempty"`
 	Messages []neuralGateMessage `json:"messages"`
 	Stream   bool                `json:"stream"`
+	System   string              `json:"system,omitempty"`
 	Options  *neuralGateOptions  `json:"options,omitempty"`
 }
 
@@ -200,11 +207,8 @@ func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, mode
 
 	chatURL := strings.TrimRight(endpoint, "/") + "/api/v1/ai/chat"
 
-	// Map messages
+	// Map messages to NeuralGate format; system prompt goes in the top-level "system" field
 	var ngMsgs []neuralGateMessage
-	if systemPrompt != "" {
-		ngMsgs = append(ngMsgs, neuralGateMessage{Role: "system", Content: systemPrompt})
-	}
 	for i, m := range messages {
 		ngMsg := neuralGateMessage{Role: string(m.Role), Content: m.Content}
 		// Attach files to the last user message
@@ -223,6 +227,7 @@ func (p *NeuralGateProvider) SendMessageStream(ctx context.Context, apiKey, mode
 		Model:    model,
 		Messages: ngMsgs,
 		Stream:   true,
+		System:   systemPrompt,
 	})
 	if err != nil {
 		return nil, err

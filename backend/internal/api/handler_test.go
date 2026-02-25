@@ -84,6 +84,37 @@ func (m *MockStore) LogToolExecution(ctx context.Context, exec *models.ToolExecu
 	return args.Error(0)
 }
 
+func (m *MockStore) RegisterTool(ctx context.Context, tool *models.RegisteredTool) error {
+	args := m.Called(ctx, tool)
+	return args.Error(0)
+}
+
+func (m *MockStore) GetTool(ctx context.Context, id uuid.UUID) (*models.RegisteredTool, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.RegisteredTool), args.Error(1)
+}
+
+func (m *MockStore) ListTools(ctx context.Context, tenantID string, appName string) ([]*models.RegisteredTool, error) {
+	args := m.Called(ctx, tenantID, appName)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*models.RegisteredTool), args.Error(1)
+}
+
+func (m *MockStore) UpdateTool(ctx context.Context, tool *models.RegisteredTool) error {
+	args := m.Called(ctx, tool)
+	return args.Error(0)
+}
+
+func (m *MockStore) DeleteTool(ctx context.Context, id uuid.UUID) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 func TestHandleConfig_Get(t *testing.T) {
 	mockStore := new(MockStore)
 	cfg := &config.Config{
