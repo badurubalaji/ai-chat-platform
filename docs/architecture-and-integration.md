@@ -11,7 +11,8 @@
 7. [What's the Same vs What's Different](#7-whats-the-same-vs-whats-different)
 8. [Provider Resolution Flow](#8-provider-resolution-flow)
 9. [Tool Execution & Confirmation](#9-tool-execution--confirmation)
-10. [Deployment Checklist](#10-deployment-checklist)
+10. [Agent Engine & Dynamic Tool Registry](#10-agent-engine--dynamic-tool-registry)
+11. [Deployment Checklist](#11-deployment-checklist)
 
 ---
 
@@ -29,6 +30,8 @@ The AI Chat Platform consists of **two distributable artifacts**:
 - **Multi-Provider Support** — Claude, OpenAI, Gemini, Ollama, NeuralGateway
 - **Streaming** — Server-Sent Events (SSE) for real-time AI responses
 - **Tool Use** — AI can call your app's internal APIs (search patients, enroll students, etc.)
+- **Agent Engine** — Multi-step tool chaining with dynamic tool registry
+- **Dynamic Tool Registry** — REST API for apps to register tools at runtime
 - **BYOK** — Users can bring their own API keys
 - **Secure** — AES-256-GCM encryption for API keys, server-side credential management
 - **Analytics** — Token usage tracking and visualization per user
@@ -755,3 +758,153 @@ This supports HIPAA/FERPA compliance auditing.
 | `AiContextService` | Service | Page context injection |
 | `MarkdownRenderPipe` | Pipe | Markdown → HTML rendering |
 | `provideAiChat()` | Function | Angular provider factory |
+
+---
+
+## 10. Agent Engine & Dynamic Tool Registry
+
+### Overview
+
+The Agent Engine enables **multi-step tool-use conversations**. Instead of a single tool call per message, the AI can chain multiple tool calls to complete complex tasks.
+
+There are two ways to provide tools to the AI:
+
+| Method | Source | When to use |
+|--------|--------|-------------|
+| **Static (adapter-config.json)** | JSON file at startup | Fixed tools per deployment |
+| **Dynamic (Tool Registry API)** | Database via REST API | Apps register tools at runtime |
+
+Both sources are merged automatically. Static adapter tools take priority over registry tools with the same name.
+
+### Agent Execution Flow
+
+```
+User: "Summarize John Smith's health status"
+  |
+  v
+[Agent Engine - Iteration 1]
+  AI decides: search_patients({ q: "John Smith" })
+  -> Execute tool -> Returns patient P-1001
+  -> Append result to context
+  |
+[Agent Engine - Iteration 2]
+  AI decides: get_patient_history({ patient_id: "P-1001" })
+  -> Execute tool -> Returns 4 history records
+  -> Append result to context
+  |
+[Agent Engine - Iteration 3]
+  AI generates final summary (no tool call)
+  -> Stream response to user
+  -> DONE
+```
+
+### Dynamic Tool Registry API
+
+Register tools at runtime without restarting the backend:
+
+```bash
+# Register a tool
+POST /api/v1/ai/registry/tools
+Content-Type: application/json
+X-Tenant-ID: my-tenant
+
+{
+  "app_name": "ehr",
+  "tool_name": "create_patient",
+  "description": "Register a new patient in the EHR system",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "description": "Patient full name" },
+      "dob":  { "type": "string", "description": "Date of birth (YYYY-MM-DD)" }
+    },
+    "required": ["name"]
+  },
+  "execution": {
+    "type": "http",
+    "method": "POST",
+    "url": "https://your-ehr-api/patients",
+    "headers": { "X-API-Key": "secret" },
+    "timeout_ms": 10000
+  },
+  "requires_confirmation": true
+}
+
+# List registered tools
+GET /api/v1/ai/registry/tools?app_name=ehr
+
+# Update a tool
+PUT /api/v1/ai/registry/tools/{id}
+
+# Delete a tool
+DELETE /api/v1/ai/registry/tools/{id}
+```
+
+### Tool Registration Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `app_name` | string | Yes | Application identifier (e.g., "ehr", "crm") |
+| `tool_name` | string | Yes | Unique tool name within the app |
+| `description` | string | Yes | What the tool does (shown to AI) |
+| `parameters` | JSON Schema | No | Tool input parameters |
+| `execution` | object | Yes | HTTP execution config |
+| `execution.type` | string | Yes | Always "http" |
+| `execution.method` | string | Yes | GET, POST, PUT, DELETE |
+| `execution.url` | string | Yes | URL with `{param}` placeholders |
+| `execution.headers` | object | No | Custom HTTP headers |
+| `execution.timeout_ms` | int | No | Timeout in ms (default: 5000) |
+| `requires_confirmation` | bool | No | Whether user must approve before execution |
+
+### SSE Events (Multi-Step)
+
+During a multi-step agent execution, the frontend receives these SSE events:
+
+```
+event: chunk        data: {"content":"Let me search..."}
+event: tool_call    data: {"tool":"search_patients","status":"executing"}
+event: tool_result  data: {"tool":"search_patients","status":"complete"}
+event: chunk        data: {"content":"Now let me get the history..."}
+event: tool_call    data: {"tool":"get_patient_history","status":"executing"}
+event: tool_result  data: {"tool":"get_patient_history","status":"complete"}
+event: chunk        data: {"content":"Based on the records..."}
+event: done         data: {"done":true,"conversation_id":"...","usage":{...}}
+```
+
+### Demo: Mock EHR Integration
+
+A mock EHR service is included for testing:
+
+```bash
+# 1. Apply database migration
+cd backend && go run ./cmd/migrate/ up
+
+# 2. Start mock EHR API (port 8085)
+go run ./cmd/mock-ehr/
+
+# 3. Start backend (port 8080 or custom)
+PORT=8086 go run ./cmd/server/
+
+# 4. Register EHR tools
+bash cmd/mock-ehr/register-tools.sh http://localhost:8086
+
+# 5. Configure a provider (via Settings UI or API)
+# Then try these queries in chat:
+#   "Show me all patients"
+#   "Find patient John Smith"
+#   "Register a new patient named Jane Doe, born 1995-06-20"
+#   "Summarize patient history for P-1001"
+```
+
+The mock EHR includes seeded data: 3 patients with medical history (visits, labs, prescriptions, diagnoses).
+
+### Integrating Your Own App
+
+To connect any application to the agent:
+
+1. **Expose REST APIs** from your app for the actions the AI should perform
+2. **Register tools** via the registry API, describing each action
+3. **Configure confirmation** for sensitive operations (create, update, delete)
+4. The AI will automatically discover and use registered tools based on user intent
+
+No code changes needed in the ai-chat-platform itself.

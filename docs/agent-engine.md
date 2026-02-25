@@ -167,3 +167,75 @@ AI → tool_call: create_patient({ name: "John Doe", dob: "1990-01-15" })
    → tool_result: { patient_id: "P-12345", status: "registered" }
 AI → "Patient John Doe has been successfully registered with ID P-12345."
 ```
+
+## Quick Start (Demo)
+
+### Prerequisites
+- PostgreSQL running with `ai_chat_db` database
+- Go 1.21+
+
+### Steps
+
+```bash
+# 1. Apply migrations (creates ai_tool_registry table)
+cd backend
+go run ./cmd/migrate/ up
+
+# 2. Start mock EHR API (port 8085, with seeded patient data)
+go run ./cmd/mock-ehr/ &
+
+# 3. Start AI backend
+PORT=8086 go run ./cmd/server/ &
+
+# 4. Register 5 EHR tools with the agent
+bash cmd/mock-ehr/register-tools.sh http://localhost:8086
+
+# 5. Verify tools are registered
+curl -s http://localhost:8086/api/v1/ai/registry/tools \
+  -H "X-Tenant-ID: default-tenant" | python -m json.tool
+```
+
+### Available Mock EHR Tools
+
+| Tool | Method | Confirmation | Description |
+|------|--------|-------------|-------------|
+| `create_patient` | POST | Yes | Register a new patient |
+| `get_patient` | GET | No | Get patient by ID |
+| `search_patients` | GET | No | Search patients by name |
+| `get_patient_history` | GET | No | Get medical history |
+| `list_patients` | GET | No | List all patients |
+
+### Seeded Test Data
+
+| Patient ID | Name | History Records |
+|-----------|------|----------------|
+| P-1001 | John Smith | 4 (visits, labs, prescription) |
+| P-1002 | Sarah Johnson | 3 (visit, diagnosis, prescription) |
+| P-1003 | Michael Brown | 0 |
+
+### Test Queries
+
+Once a provider is configured (BYOK API key via Settings UI):
+
+- **Simple tool call**: "Show me all patients"
+- **Search + lookup**: "Find patient John Smith"
+- **Multi-step**: "Summarize John Smith's health status" (searches, gets history, summarizes)
+- **With confirmation**: "Register a new patient named Jane Doe, born 1995-06-20"
+- **Error handling**: "Get history for patient P-9999" (patient not found)
+
+## Files Reference
+
+| File | Purpose |
+|------|---------|
+| `backend/internal/domain/agent.go` | Multi-step agent execution loop |
+| `backend/internal/domain/registry.go` | Tool registry (merges adapter + DB tools) |
+| `backend/internal/domain/executor.go` | HTTP-based tool execution |
+| `backend/internal/domain/adapter.go` | Static adapter config loading |
+| `backend/internal/domain/orchestrator.go` | Two-pass tool calling for non-native providers |
+| `backend/internal/domain/audit.go` | Tool execution audit logging |
+| `backend/internal/api/handler.go` | HTTP handlers (chat, registry CRUD) |
+| `backend/internal/store/store.go` | PostgreSQL data access layer |
+| `backend/internal/models/models.go` | Data models (RegisteredTool, etc.) |
+| `backend/db/migrations/000003_tool_registry.up.sql` | Tool registry DB schema |
+| `backend/cmd/mock-ehr/main.go` | Mock EHR REST API for testing |
+| `backend/cmd/mock-ehr/register-tools.sh` | Script to register demo EHR tools |
