@@ -1,6 +1,13 @@
 # Story 2.1: Build System Prompt Injection for Two-Pass Tool Orchestration
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/internal/domain/orchestrator.go BuildSystemPrompt` appends `## Available Tools` + per-tool schema + tool-calling instructions.
+- AC#2 ✅ Instruction block specifies the exact `{"tool_call": {"name": "...", "arguments": {...}}}` format that `ParseToolCall` reads.
+- AC#3 ✅ No tools → returns base unchanged.
+- Task 2 ✅ Unit tests added in `orchestrator_test.go`: empty base, unchanged-without-tools, full prompt asserts (base text preserved, tool names listed, confirmation note present, canonical JSON format instruction present), and state-restoration after `BuildSystemPromptWithTools` override.
 
 ## Story
 

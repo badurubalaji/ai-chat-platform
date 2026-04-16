@@ -1,6 +1,11 @@
 # Story 6.1: Handle tool_confirm SSE Event in AiChatService
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `frontend/projects/mdp-ai-chat/src/lib/services/ai-chat.service.ts:151-162` — `case 'tool_confirm'` emits `AiStreamChunk` with `tool_confirm: { confirmation_id, tool, description, params }`.
+- AC#2 ✅ Model split at `ai-chat.model.ts:62-75`: `AiToolConfirmation` for confirm, `tool_call?: { tool; status }` remains separate on `AiStreamChunk` — cleanly distinguishable.
 
 ## Story
 

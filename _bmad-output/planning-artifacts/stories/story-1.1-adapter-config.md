@@ -1,6 +1,14 @@
 # Story 1.1: Define AdapterConfig Struct and JSON Loader
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/internal/domain/adapter.go` loads JSON into `Adapter` struct.
+- AC#2 ✅ Empty path returns nil, no error.
+- AC#3 ✅ Invalid JSON → descriptive error wrap; validation errors cover missing domain/system_prompt, tool fields, default_provider fields.
+- AC#4 ✅ Only read-only accessors — `Domain()`, `SystemPrompt()`, `Tools()`, `ToolByName()`, `HasTools()`, `HasDefaultProvider()`, `DefaultProvider()`, `ToolsForProvider()`. No setters.
+- Task 4 ✅ Unit tests added in `backend/internal/domain/adapter_test.go` covering: empty path, missing file, invalid JSON, valid config, default POST method, 7 validation-failure subtests, default provider fallback defaults, `ToolsForProvider` conversion including nil case.
 
 ## Story
 

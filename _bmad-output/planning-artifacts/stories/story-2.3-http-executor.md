@@ -1,6 +1,15 @@
 # Story 2.3: Build HTTP-Based Tool Executor
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/internal/domain/executor.go executeHTTP` sets method, configured headers + `X-Tenant-ID`/`X-User-ID`, body.
+- AC#2 ✅ Path param `{key}` interpolation; remaining args go to query string (GET) or JSON body otherwise.
+- AC#3 ✅ Successful body returned as `json.RawMessage`; non-JSON bodies wrapped as `{"result": "..."}`.
+- AC#4 ✅ `context.WithTimeout` using tool's `TimeoutMs` (default 5000ms); transport error returns structured `{"error":...}`; HTTP 4xx/5xx wrapped with status code.
+- AC#5 ✅ Unknown tool name → `"unknown tool: %s"`; registry tried first.
+- Task 2 ✅ `httptest.Server`-based unit tests in `executor_test.go` covering: unknown tool, POST body/headers/tenant+user propagation + configured header pass-through, GET path-param interpolation with extra args as query string, HTTP 403 error wrapping, per-tool timeout, non-JSON response wrapping, invalid arguments JSON, default timeout when unspecified.
 
 ## Story
 

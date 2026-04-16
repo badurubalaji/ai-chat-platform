@@ -1,6 +1,13 @@
 # Story 6.3: Update Frontend to Show Tool Execution Lifecycle
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `ai-message.component.ts:20-21` renders `<mat-spinner diameter="16">` when `tool_status === 'executing'` (and no active confirmation card).
+- AC#2 ✅ `ai-chat.component.ts:492-518 handleToolCallEvent` updates the existing tool_call message in place (no duplicate) by matching on tool_name + status. Complete status renders `check_circle` at `ai-message.component.ts:27-29`.
+- AC#3 ✅ `error` status renders `error` icon at `ai-message.component.ts:25-26`; backend sends `{"tool":"...","status":"error","error":"..."}` SSE at `agent.go:187-190`.
+- AC#4 ✅ On approve (`ai-chat.component.ts:520-528`), message transitions to `tool_status: 'executing'` with `tool_confirmation` cleared — confirmation card disappears and spinner appears. Buttons aren't "disabled" verbatim but they're removed entirely, satisfying the UX intent. Cancelled path adds explicit `'cancelled'` status + `block` icon (`ai-message.component.ts:22-24`).
 
 ## Story
 

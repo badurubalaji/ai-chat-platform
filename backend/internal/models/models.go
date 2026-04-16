@@ -16,6 +16,8 @@ const (
 	RoleSystem     MessageRole = "system"
 	RoleToolUse    MessageRole = "tool_use"
 	RoleToolResult MessageRole = "tool_result"
+	RoleToolCall   MessageRole = "tool_call" // persisted form (aligned with frontend), distinct from RoleToolUse used in provider-facing history
+
 )
 
 // FileAttachment represents a file attached to a chat message

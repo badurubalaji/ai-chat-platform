@@ -1,6 +1,12 @@
 # Story 1.3: Use Adapter System Prompt in handleChat()
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/internal/api/handler.go:510-515` — `resolveSystemPrompt()` returns `h.adapter.SystemPrompt()` when adapter non-nil.
+- AC#2 ✅ Same method returns `"You are a helpful assistant."` fallback when nil.
+- Invocation site: `handler.go:306`, passed to agent via `RunParams.SystemPrompt`.
 
 ## Story
 

@@ -291,9 +291,15 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build message history for provider
+	// Build message history for provider.
+	// Skip tool_call rows — they are UI artifacts, not conversation turns.
+	// The assistant's follow-up message already summarizes tool outcomes,
+	// and providers only accept user/assistant/system roles in history.
 	var providerMessages []models.Message
 	for _, m := range history {
+		if m.Role == models.RoleToolCall {
+			continue
+		}
 		providerMessages = append(providerMessages, *m)
 	}
 	providerMessages = append(providerMessages, *userMsg)
@@ -312,6 +318,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		Registry:     h.registry,
 		Orchestrator: h.orchestrator,
 		Adapter:      h.adapter,
+		AuditLogger:  h.store,
 	})
 
 	// Confirmation callback — bridges agent to SSE confirmation flow
@@ -368,6 +375,16 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		case "_response":
 			// Internal event: final response text for saving
 			fullResponse = event.Data
+		case "_tool_msg":
+			// Internal event: persist tool interaction to conversation history
+			var msg models.Message
+			if err := json.Unmarshal([]byte(event.Data), &msg); err != nil {
+				log.Printf("[CHAT] Failed to unmarshal tool message: %v", err)
+				continue
+			}
+			if err := h.store.CreateMessage(r.Context(), &msg); err != nil {
+				log.Printf("[CHAT] Failed to save tool message: %v", err)
+			}
 		case "done":
 			var doneData struct {
 				Usage *models.Usage `json:"usage"`
@@ -607,8 +624,19 @@ func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 	case "GET":
 		config, err := h.store.GetProviderConfig(r.Context(), tenantID)
 		if err != nil {
-			// Return empty config if not found
+			// No user BYOK — fall back to adapter default if available,
+			// so the frontend can show chat is ready without user setup.
 			w.Header().Set("Content-Type", "application/json")
+			if h.adapter != nil && h.adapter.HasDefaultProvider() {
+				dp := h.adapter.DefaultProvider()
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"enabled":    true,
+					"is_default": true,
+					"provider":   dp.Provider,
+					"model":      dp.Model,
+				})
+				return
+			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"enabled": false})
 			return
 		}

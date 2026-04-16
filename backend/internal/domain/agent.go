@@ -34,6 +34,7 @@ type Agent struct {
 	registry      *ToolRegistry
 	orchestrator  *Orchestrator
 	adapter       *Adapter
+	auditLogger   AuditLogger
 	maxIterations int
 }
 
@@ -44,6 +45,7 @@ type AgentConfig struct {
 	Registry      *ToolRegistry
 	Orchestrator  *Orchestrator
 	Adapter       *Adapter
+	AuditLogger   AuditLogger // optional — if non-nil, tool executions are logged
 	MaxIterations int
 }
 
@@ -59,8 +61,40 @@ func NewAgent(cfg AgentConfig) *Agent {
 		registry:      cfg.Registry,
 		orchestrator:  cfg.Orchestrator,
 		adapter:       cfg.Adapter,
+		auditLogger:   cfg.AuditLogger,
 		maxIterations: maxIter,
 	}
+}
+
+// logAudit persists a tool execution record, ignoring nil logger and logging any error.
+func (a *Agent) logAudit(ctx context.Context, exec *models.ToolExecution) {
+	if a.auditLogger == nil {
+		return
+	}
+	if err := a.auditLogger.LogToolExecution(ctx, exec); err != nil {
+		log.Printf("[AGENT] Failed to log tool execution: %v", err)
+	}
+}
+
+// emitToolMessage sends a persistence event so the handler can save the tool
+// interaction to ai_messages. status is "complete", "error", or "cancelled".
+func emitToolMessage(events chan<- AgentEvent, convoID uuid.UUID, toolName, status string) {
+	msg := models.Message{
+		ID:             uuid.New(),
+		ConversationID: convoID,
+		Role:           models.RoleToolCall,
+		Content:        toolName,
+		Metadata: map[string]interface{}{
+			"tool_name":   toolName,
+			"tool_status": status,
+		},
+		CreatedAt: time.Now(),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	events <- AgentEvent{Type: "_tool_msg", Data: string(data)}
 }
 
 // RunParams holds all parameters needed for an agent run.
@@ -158,11 +192,16 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 			}
 
 			// Handle confirmation if required
+			confirmedByUser := false
 			if toolConfig.RequiresConfirmation && params.ConfirmFn != nil {
 				confirmID := uuid.New().String()[:12]
 				approved, err := params.ConfirmFn(confirmID, toolName, toolConfig.Description, arguments)
 				if err != nil || !approved {
 					log.Printf("[AGENT] Tool %s cancelled by user", toolName)
+					cancelRec := NewToolExecution(params.TenantID, params.UserID, params.ConvoID, toolName, arguments)
+					MarkCancelled(cancelRec)
+					a.logAudit(ctx, cancelRec)
+					emitToolMessage(events, params.ConvoID, toolName, "cancelled")
 					// Tell model it was cancelled
 					messages = append(messages,
 						models.Message{Role: models.RoleAssistant, Content: iterResponse},
@@ -170,6 +209,7 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 					)
 					continue
 				}
+				confirmedByUser = true
 			}
 
 			// Execute the tool
@@ -178,27 +218,35 @@ func (a *Agent) Run(ctx context.Context, params RunParams) (<-chan AgentEvent, s
 				Data: fmt.Sprintf(`{"tool":"%s","status":"executing"}`, toolName),
 			}
 
+			execRec := NewToolExecution(params.TenantID, params.UserID, params.ConvoID, toolName, arguments)
+			execRec.ConfirmedByUser = confirmedByUser
+
 			start := time.Now()
 			result, execErr := a.executor.ExecuteToolConfig(ctx, toolConfig, arguments, params.TenantID, params.UserID.String())
 			durationMs := int(time.Since(start).Milliseconds())
 
 			if execErr != nil {
 				log.Printf("[AGENT] Tool %s failed in %dms: %v", toolName, durationMs, execErr)
+				MarkError(execRec, execErr.Error(), durationMs)
 				events <- AgentEvent{
 					Type: "tool_result",
 					Data: fmt.Sprintf(`{"tool":"%s","status":"error","error":"%s"}`, toolName, execErr.Error()),
 				}
 				aMsg, tMsg := a.provider.FormatToolResult(iterResponse, detectedToolCall, execErr.Error(), true)
 				messages = append(messages, aMsg, tMsg)
+				emitToolMessage(events, params.ConvoID, toolName, "error")
 			} else {
 				log.Printf("[AGENT] Tool %s executed in %dms", toolName, durationMs)
+				MarkSuccess(execRec, result, durationMs)
 				events <- AgentEvent{
 					Type: "tool_result",
 					Data: fmt.Sprintf(`{"tool":"%s","status":"complete"}`, toolName),
 				}
 				aMsg, tMsg := a.provider.FormatToolResult(iterResponse, detectedToolCall, string(result), false)
 				messages = append(messages, aMsg, tMsg)
+				emitToolMessage(events, params.ConvoID, toolName, "complete")
 			}
+			a.logAudit(ctx, execRec)
 
 			// Loop continues — model will process tool result
 		}

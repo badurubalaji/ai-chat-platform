@@ -1,6 +1,12 @@
 # Story 1.2: Wire Adapter Loading into main.go and Handler
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/cmd/server/main.go:27-37` loads adapter post-config, logs domain + tool count, passes to `api.NewHandler()`.
+- AC#2 ✅ Empty `ADAPTER_CONFIG_PATH` → `LoadAdapter("")` returns nil; "generic mode" log; server starts normally.
+- AC#3 ✅ `backend/internal/api/handler.go:42-59` — Handler stores `adapter *domain.Adapter` field.
 
 ## Story
 

@@ -1,6 +1,15 @@
 # Story 2.2: Build Tool-Call Parser for Two-Pass Responses
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `orchestrator.go ParseToolCall` + `parseToolCallJSON` return `*models.ToolCall` (ID `tc_<uuid8>`, Name, Arguments string).
+- AC#2 ✅ No JSON match → returns `nil, response` as plain text.
+- AC#3 ✅ Malformed JSON → `parseToolCallJSON` returns nil, graceful fall-through.
+- AC#4 ✅ Markdown code fences (`json` tagged and bare) handled via `codeFencePattern` regex. Also supports raw JSON + whole-response JSON fallbacks.
+- Signature differs slightly from story (returns `(*ToolCall, string)` rather than parsing multiple — V1 constraint matches story note).
+- Task 2 ✅ Table-driven unit tests in `orchestrator_test.go`: raw JSON, json-tagged fence, bare fence, plain text, malformed JSON, empty-name rejection, unrelated JSON object, plus a dedicated test asserting the first of multiple tool calls is returned.
 
 ## Story
 

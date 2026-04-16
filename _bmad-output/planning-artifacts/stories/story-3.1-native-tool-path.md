@@ -1,6 +1,19 @@
 # Story 3.1: Wire Native Tool Calling Path (Claude/OpenAI/Gemini)
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/internal/domain/agent.go` resolves tools, sets `useNativeTools` when `provider.SupportsTools()`; `nativeTools` passed to `SendMessageStream`.
+- AC#2 ✅ Confirmation branch skipped when `!RequiresConfirmation`; tool executes immediately; `tool_result` events emitted; loop iterates so next provider call runs with tool result appended.
+- AC#3 ✅ Multi-iteration loop (default 5), tool result appended via `FormatToolResult`; model's follow-up streams as chunk events.
+- AC#4 ✅ Error path: `FormatToolResult(..., isError=true)`, error `tool_result` SSE emitted, model sees the error in next iteration and generates an error-aware response.
+- Task 3 ✅ Tool interactions are now persisted to `ai_messages`:
+  - New role `models.RoleToolCall = "tool_call"` (aligned with frontend) at `models/models.go:19`.
+  - Agent emits internal `_tool_msg` event after success, error, and cancel paths via `emitToolMessage()` helper (`agent.go`).
+  - Handler's event loop unmarshals `_tool_msg` and calls `h.store.CreateMessage` (`handler.go`).
+  - Provider history at `handler.go` skips `RoleToolCall` rows so providers receive only user/assistant/system turns on reload.
+- Design divergence (positive): entire flow was factored into `domain.Agent` rather than inline in `handleChat`, and expanded to **multi-step** tool calling (not just two-pass). This is an improvement over the story's "second SendMessageStream call" design.
 
 ## Story
 

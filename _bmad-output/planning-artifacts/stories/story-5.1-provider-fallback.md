@@ -1,6 +1,14 @@
 # Story 5.1: Implement Provider Resolution with BYOK Override
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `handler.go` `resolveProvider` — on `sql.ErrNoRows` with `adapter.HasDefaultProvider()`, resolves adapter's `DefaultProvider()` credentials.
+- AC#2 ✅ BYOK config tried first; if present, decrypts and uses it.
+- AC#3 ✅ `"no provider configured"` error when neither exists.
+- AC#4 ✅ `apiKey := dp.ClientID + ":" + dp.ClientSecret` constructs NG format.
+- Task 2 ✅ `handleConfig` GET now surfaces the adapter default when no BYOK exists: returns `{enabled: true, is_default: true, provider, model}`. Frontend can detect chat-ready state without user setup.
 
 ## Story
 

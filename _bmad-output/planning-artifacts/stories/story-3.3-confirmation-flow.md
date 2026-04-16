@@ -1,6 +1,14 @@
 # Story 3.3: Implement Confirmation Flow for Destructive Tools
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `handler.go:318-348` — `confirmFn` callback stores `PendingConfirmation` in `sync.Map`, emits `tool_confirm` SSE with `{confirmation_id, tool, description, params}`. Triggered from `agent.go:161-173` when `toolConfig.RequiresConfirmation`.
+- AC#2 ✅ `/api/v1/ai/chat/confirm` POST at `handler.go:449-475` sends `req.Approved` to `ResultChan`; agent resumes and executes tool.
+- AC#3 ✅ `agent.go:167-171` — on cancel, appends assistant message + system message `"The user cancelled the '%s' action. Acknowledge this gracefully."` so model replies gracefully.
+- AC#4 ✅ `handler.go:464-467` — unknown `confirmation_id` returns HTTP 404.
+- Buffered `chan bool` cap 1 (`handler.go:325`), 5-min timeout (`handler.go:341`), context cancel handled (`handler.go:344-347`) — no goroutine leak.
 
 ## Story
 

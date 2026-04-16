@@ -1,6 +1,13 @@
 # Story 3.2: Wire Two-Pass Tool Calling Path (NeuralGateway/Ollama)
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `agent.go:98, 101-103` — `useTwoPass` branch calls `orchestrator.BuildSystemPromptWithTools(toolConfigs)`; `nativeTools` stays empty so provider receives no tools.
+- AC#2 ✅ `agent.go:134-139` — after first-pass stream accumulated, `orchestrator.ParseToolCall(iterResponse)` runs; on match the loop iterates with tool result in messages, triggering a second provider call.
+- AC#3 ✅ No tool call → `detectedToolCall == nil` → loop breaks at `:142-145` and the response is already streamed via `consumeStream` chunk events.
+- Note: frontend already renders chunks live, so the "replace last message when tool_call detected" UX concern from story notes is handled by the tool_call SSE event triggering a new tool_call message in `ai-chat.component.ts:427-428`.
 
 ## Story
 

@@ -1,12 +1,20 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mdp/ai-chat-platform/backend/internal/models"
 )
+
+// AuditLogger is the subset of store.Store needed by the agent to persist
+// tool execution audit records. The full store.Store satisfies this interface
+// via its LogToolExecution method.
+type AuditLogger interface {
+	LogToolExecution(ctx context.Context, exec *models.ToolExecution) error
+}
 
 // NewToolExecution creates a ToolExecution record for audit logging.
 func NewToolExecution(tenantID string, userID, conversationID uuid.UUID, toolName string, arguments json.RawMessage) *models.ToolExecution {

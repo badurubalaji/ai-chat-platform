@@ -1,6 +1,12 @@
 # Story 4.1: Create Database Migration for ai_tool_executions
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `backend/db/migrations/000002_tool_executions.up.sql` creates `ai_tool_executions` with all required columns (id, tenant_id, user_id, conversation_id, tool_name, arguments JSONB, result JSONB, status, confirmed_by_user, execution_duration_ms, created_at).
+- AC#2 ✅ Both indexes created: `idx_ai_tool_executions_tenant(tenant_id, created_at)` and `idx_ai_tool_executions_conversation(conversation_id)`.
+- Model struct `models.ToolExecution` at `backend/internal/models/models.go:119-132`. Down migration also present.
 
 ## Story
 

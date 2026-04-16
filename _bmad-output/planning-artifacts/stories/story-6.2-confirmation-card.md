@@ -1,6 +1,13 @@
 # Story 6.2: Display Confirmation Card in Chat Component
 
-Status: ready-for-dev
+Status: done
+
+## Audit (2026-04-16)
+
+- AC#1 ✅ `ai-chat.component.ts:425-426` routes `chunk.tool_confirm` to `addConfirmationMessage()` (`:477-490`), which creates a `tool_call`-role message with `metadata.tool_confirmation`; card rendered inline in `ai-message.component.ts:32-61` (header, description, params grid, approve/dismiss buttons).
+- AC#2 ✅ `onConfirmTool` at `ai-chat.component.ts:520-528` calls `chatService.sendConfirmation(id, true)`; service POSTs to `/chat/confirm` at `ai-chat.service.ts:215-220`.
+- AC#3 ✅ `onDismissTool` at `:530-538` calls `sendConfirmation(id, false)`; message metadata updated to `tool_status: 'cancelled'`, `tool_confirmation` cleared.
+- Design divergence: Story notes envisioned reusing `AiActionCardComponent`, but implementation renders a dedicated `tool-confirm-card` template in `ai-message.component.ts`. Functionally equivalent — `AiActionCardComponent` remains unused by this flow.
 
 ## Story
 
